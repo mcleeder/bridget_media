@@ -49,7 +49,8 @@ class PodcastListScreen:
         visible = self._feeds[self._scroller.visible_slice()]
         for index, feed in enumerate(visible):
             y = layout.row_top(index)
-            renderer.draw_divider(draw, y)
+            # Stop at the sidebar so row dividers don't cut through the chevrons
+            renderer.draw_divider(draw, y, x_end=layout.SIDEBAR_X)
             renderer.draw_text_clipped(
                 draw,
                 feed.name,

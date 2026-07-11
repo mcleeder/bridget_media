@@ -131,5 +131,5 @@ def draw_progress_bar(
         draw.rectangle((x0, y0, fill_x, y1), fill=BLACK)
 
 
-def draw_divider(draw: ImageDraw.ImageDraw, y: int) -> None:
-    draw.line([(0, y), (DISPLAY_WIDTH, y)], fill=BLACK, width=1)
+def draw_divider(draw: ImageDraw.ImageDraw, y: int, x_end: int = DISPLAY_WIDTH) -> None:
+    draw.line([(0, y), (x_end, y)], fill=BLACK, width=1)

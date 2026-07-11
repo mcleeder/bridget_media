@@ -54,7 +54,8 @@ class EpisodeListScreen:
         visible = self._episodes[self._scroller.visible_slice()]
         for index, episode in enumerate(visible):
             y = layout.row_top(index)
-            renderer.draw_divider(draw, y)
+            # Stop at the sidebar so row dividers don't cut through the chevrons
+            renderer.draw_divider(draw, y, x_end=layout.SIDEBAR_X)
 
             marker = "" if episode.played else _UNPLAYED_MARKER
             renderer.draw_text_clipped(

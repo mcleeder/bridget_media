@@ -159,6 +159,7 @@ class DisplayDriver(Protocol):
 ```
 pi_media/
 ├── CLAUDE.md
+├── .claude/skills/verify/     # project verify skill: how to run + drive the app for verification
 ├── .env                       # Pi SSH credentials (git-ignored)
 ├── requirements.txt           # runtime deps
 ├── requirements-dev.txt       # + mypy/ruff (local only)
@@ -171,7 +172,7 @@ pi_media/
 │   ├── setup_ssh_key.sh       # one-time passwordless SSH setup
 │   ├── setup_pi.sh            # on-Pi provisioning (run once per flash)
 │   ├── pi-media.service       # systemd unit template
-│   └── mpd.conf               # MPD config template (bluez-alsa output)
+│   └── mpd.conf               # MPD config template (bluez-alsa output, ffmpeg mp3 decoding)
 ├── db/
 │   ├── __init__.py
 │   ├── database.py            # connection, schema init, DatabaseError
@@ -237,6 +238,8 @@ ssh <user>@<host>.local 'bash ~/pi_media/deploy/setup_pi.sh'
 Reflash gotchas: clear the stale host key first (`ssh-keygen -R <host>.local`), and the deploy tooling needs **passwordless sudo** on the Pi — the imager-created user doesn't have it by default (`echo '<user> ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/010_<user>-nopasswd`).
 
 `setup_pi.sh` is idempotent: apt packages (MPD, bluez-alsa, GPIO/SPI/I2C libs), enables SPI + I2C, pip runtime deps (`--break-system-packages`, Pillow via apt), clones the Waveshare `Touch_e-Paper_HAT` repo and installs its `TP_lib` package (imported directly by `display/drivers/waveshare.py`; the panel class is `EPD_2IN9_V2`, touch is `icnt86.INCT86` — Waveshare's own typo), installs `/etc/mpd.conf` (Bluetooth output via bluez-alsa) and the `pi-media` systemd service. It ends by printing the two manual steps: pair the speaker with `bluetoothctl`, then `configure-speaker <MAC>` (installed helper that patches the MAC into mpd.conf), and reboot.
+
+Speaker-pairing gotchas (hit on the real device): the BT controller ships **rfkill soft-blocked** — `sudo /usr/sbin/rfkill unblock bluetooth` before `bluetoothctl power on` will work; the device must be discovered by a `bluetoothctl scan` before `pair` accepts its MAC (an `hcitool scan` sighting isn't enough); and `configure-speaker` restarts MPD, which the app heals from via auto-reconnect. Current speaker: EarFun UBOOM L, paired + trusted 2026-07-11.
 
 **Iterating:** `bash deploy/deploy.sh` — tar-over-ssh sync (excludes caches, `.env`, the DB) + service restart. Deleted files are not removed on the Pi. App logs: `journalctl -u pi-media -f`.
 
@@ -382,14 +385,16 @@ python -m mypy --strict . --exclude test_display.py
 - [x] Scroll support on both list screens (sidebar chevrons, partial refresh)
 - [x] `mypy --strict` + `ruff` pass clean; navigation and rendering verified end-to-end in the simulator
 
-**Hardware bring-up (2026-07-11)** — first Pi deployment done: app boots on the device, e-ink driver initializes (after rewriting `waveshare.py` against TP_lib's real API — `EPD_2IN9_V2` + ICNT86 touch, not the guessed `EPD`/GT1151), and MPD connects on localhost. Still needs human verification on the device: partial-refresh quality when scrolling, touch tap accuracy, and audio out (Bluetooth speaker not yet paired — `bluetoothctl` + `configure-speaker <MAC>`).
+**Hardware bring-up (2026-07-11)** — first Pi deployment done: app boots on the device, e-ink driver initializes (after rewriting `waveshare.py` against TP_lib's real API — `EPD_2IN9_V2` + ICNT86 touch, not the guessed `EPD`/GT1151), and MPD connects on localhost. Audio out verified same day (see Phase 2). Touch works in practice (navigation/playback driven by taps on the panel); partial-refresh quality when scrolling hasn't been explicitly assessed.
 
-### Phase 2 — Polish (in progress)
+### Phase 2 — Polish ✅ COMPLETE (2026-07-11)
 - [x] Episode played/unplayed tracking — `ScreenManager._mark_played_if_past_threshold()` (called from `refresh_playback()`) marks an episode played once 90% heard (`_PLAYED_FRACTION_THRESHOLD`); on Back from Now Playing the episode screen is rebuilt from the repository (scroll position preserved via `EpisodeListScreen.scroll_offset`) so the ● marker updates
-- [x] Resume from last position — position persisted every 30s from `refresh_playback()` (`_POSITION_PERSIST_INTERVAL_SEC`, throttled to limit SD writes) plus immediately on pause and on Back; `seek()` (now on the `AudioPlayer` Protocol) is issued right after `play()` when `play_position_sec > 0` and the episode isn't played; marking played resets the stored position to 0 so replays start fresh. The seek-right-after-play timing against a live MPD stream still needs on-device confirmation
+- [x] Resume from last position — position persisted every 30s from `refresh_playback()` (`_POSITION_PERSIST_INTERVAL_SEC`, throttled to limit SD writes) plus immediately on pause and on Back; `seek()` (now on the `AudioPlayer` Protocol) is issued right after `play()` when `play_position_sec > 0` and the episode isn't played; marking played resets the stored position to 0 so replays start fresh. Seek-right-after-play confirmed against live MPD on-device (2026-07-11). Caveat: ad-stitched feeds (WNYC) regenerate the stream per session, so a resumed position can land ±a few seconds off
 - [x] Mid-session data refresh — the fetch job sets a `threading.Event` (wired in `main.py`); the main loop calls `ScreenManager.reload_feeds()` on the UI thread, which re-queries feeds, preserves scroll, and partial-refreshes only if the podcast list is showing. Covers both first-boot fill-in and the 4h background refresh
 - [x] Faster startup — the startup fetch no longer blocks: the scheduler job runs with `next_run_time=now` in its own thread and the UI comes up from the DB immediately; the fetch-completed event above fills the list in afterwards
 - [x] Error states on screen — when `get_state()` raises, `NowPlayingScreen` draws an "MPD unreachable" notice (error icon + text) in place of the progress bar/times; controls stay visible so Back still works
+
+**Audio verification (2026-07-11)** — EarFun UBOOM L speaker paired/trusted and set as MPD output via `configure-speaker`; live playback, ±30s skips, pause/resume, and resume-from-position all confirmed on the device (after the player-layer fixes in Key Notes below). A failed player command degrades to a log line by design, which on-screen looks like a dead button — check `journalctl -u pi-media` before assuming a touch problem.
 
 ### Phase 3 — Future
 - [ ] Feed management UI (add/remove RSS feeds) — device has no keyboard; plan is manual file sync of a feeds file the app reads instead of hardcoded `config.FEEDS`. Note: feeds removed from config are never pruned from the DB, so they linger on the podcast list (visible in the local dev DB, which still has 'Hardcore History')
@@ -400,10 +405,11 @@ python -m mypy --strict . --exclude test_display.py
 
 - MPD is installed/configured by `deploy/setup_pi.sh` (plus the manual speaker pairing step). Use `python-mpd2` to connect on `localhost:6600`. If MPD is unreachable at startup, `main.py` logs and continues — the UI still comes up.
 - MPD drops idle client connections after 60s (`connection_timeout` default) and restarts when `configure-speaker` runs — `PlayerController._execute()` therefore reconnects once and retries on connection loss. Without it, browsing lists for over a minute killed all playback commands ("MPD unreachable") until an app restart.
-- Podcast audio URLs sit behind ad/tracking redirect chains that can exceed MPD's hard limit of 5 (Radiolab's is 6+), and MPD fails *asynchronously* — `play` is accepted, the decode error lands a second later and MPD ends up **stopped**. `PlayerController` therefore (a) resolves redirects app-side before queueing (`_resolve_stream_url`, ranged GET with a player User-Agent — some trackers 403 Python's default), and (b) `resume()` issues `play` when MPD is stopped, since `pause(0)` is a silent no-op there.
+- Podcast audio URLs sit behind ad/tracking redirect chains that can exceed MPD's hard limit of 5 (Radiolab's is 6+), and MPD fails *asynchronously* — `play` is accepted, the decode error lands a second later and MPD ends up **stopped**. `PlayerController` therefore (a) resolves redirects app-side before queueing (`_resolve_stream_url`: plain GET, body unread, player-style User-Agent — some trackers 403 Python's default, and a `Range` header must NOT be sent because WNYC's CDN bakes it into the signed URL as `x-access-range`, killing seeks), and (b) `resume()` issues `play` when MPD is stopped, since `pause(0)` is a silent no-op there.
+- ±30s skip needs ffmpeg as the mp3 decoder: MPD's default (`mad`) can't seek ad-stitched streams ("Decoder failed to seek" on WNYC/Radiolab), so `deploy/mpd.conf` disables `mad` and `mpg123`. If skips break again after an MPD reinstall, check those decoder blocks survived in `/etc/mpd.conf`.
 - Waveshare provides Python demo code on their wiki — use it as the display/touch driver base, don't rewrite from scratch.
 - RSS feeds are hardcoded in `config.py` as `FeedConfig` frozen dataclasses (currently 4 feeds so scrolling is exercisable).
 - No audio files stored locally — playback always streams from `episode.audio_url`.
 - Partial refresh is used for all in-screen updates (scroll, play/pause toggle, skip, periodic progress redraw); full refresh only on state transitions.
 - All UI development happens locally with `--simulate`. MPD integration is tested on the Pi only. On Windows every player command raises inside `ScreenManager._player_command` and becomes a log line — that's the expected simulator behavior, not a bug.
-- To verify UI changes without clicking through the simulator: drive `ScreenManager` with scripted touches against a fake driver that saves each frame as a PNG (a capturing driver + fake player satisfying the Protocols is ~60 lines; see the Protocols in `display/drivers/base.py` and `display/playback.py`).
+- To verify UI changes without clicking through the simulator: drive `ScreenManager` with scripted touches against a fake driver that saves each frame as a PNG (a capturing driver + fake player satisfying the Protocols is ~60 lines). `.claude/skills/verify/SKILL.md` has the full recipe, including real touch coordinates for every tap target and how to fast-forward the position-persist throttle.
