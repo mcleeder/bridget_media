@@ -51,7 +51,7 @@ Navigation is an explicit state machine, not a screen stack.
 - **`display/state_machine.py`** — `AppState` enum (`PODCAST_LIST`, `EPISODE_LIST`, `NOW_PLAYING`) and a pure `transition(state, event) → AppState`. No side effects live here.
 - **`display/events.py`** — frozen event dataclasses: `FeedSelected`, `EpisodeSelected`, `BackRequested`, `ListScrolled`, `PlayPauseToggled`, `SkipRequested`.
 - **Screens** (`display/screens/`) only render and translate touches into events (`handle_touch(x, y) → Event | None`). They never navigate, never touch the player, never construct other screens. `Screen` is a Protocol (`display/screens/base.py`).
-- **`display/manager.py`** — `ScreenManager` drives the machine: applies each event's side effects (player commands, screen construction), calls `transition()`, and refreshes the display — **full refresh on state changes, partial refresh for in-screen updates** (scroll, play/pause, skip, progress).
+- **`display/manager.py`** — `ScreenManager` drives the machine: applies each event's side effects (player commands, screen construction), calls `transition()`, and refreshes the display — **partial refresh everywhere, with a true full refresh every Nth state transition** (`_TRANSITIONS_BETWEEN_FULL_REFRESHES`) to clear e-ink ghosting without flashing on every navigation.
 
 Transitions:
 
@@ -93,8 +93,8 @@ CREATE TABLE episodes (
 ### Key Constraints
 
 - **296×128px** — very small; font sizes and touch targets must be deliberate
-- **Full refresh** (~2s) used for screen transitions
-- **Partial refresh** (faster) used for in-screen updates (playback progress, time)
+- **Full refresh** (~2s, visibly flashes a few times — inherent to the e-ink waveform) runs every 6th screen transition to clear ghosting; the first frame after boot is also full (partials need a base frame)
+- **Partial refresh** (fast, flash-free) used for everything else: in-screen updates (playback progress, time) and the transitions in between
 - E-ink uses Waveshare's SPI driver; touch uses I2C
 
 ### Screens
@@ -410,6 +410,6 @@ python -m mypy --strict . --exclude test_display.py
 - Waveshare provides Python demo code on their wiki — use it as the display/touch driver base, don't rewrite from scratch.
 - RSS feeds are hardcoded in `config.py` as `FeedConfig` frozen dataclasses (currently 4 feeds so scrolling is exercisable).
 - No audio files stored locally — playback always streams from `episode.audio_url`.
-- Partial refresh is used for all in-screen updates (scroll, play/pause toggle, skip, periodic progress redraw); full refresh only on state transitions.
+- Partial refresh is used for all in-screen updates (scroll, play/pause toggle, skip, periodic progress redraw) *and* for most screen transitions; a real full refresh (the multi-flash one) only runs every `_TRANSITIONS_BETWEEN_FULL_REFRESHES`th transition to wipe accumulated ghosting. If ghosting looks bad on the panel, lower that constant in `display/manager.py`.
 - All UI development happens locally with `--simulate`. MPD integration is tested on the Pi only. On Windows every player command raises inside `ScreenManager._player_command` and becomes a log line — that's the expected simulator behavior, not a bug.
 - To verify UI changes without clicking through the simulator: drive `ScreenManager` with scripted touches against a fake driver that saves each frame as a PNG (a capturing driver + fake player satisfying the Protocols is ~60 lines). `.claude/skills/verify/SKILL.md` has the full recipe, including real touch coordinates for every tap target and how to fast-forward the position-persist throttle.

@@ -35,6 +35,11 @@ _PLAYED_FRACTION_THRESHOLD: Final[float] = 0.9
 # a compromise between resume accuracy and SD-card write wear.
 _POSITION_PERSIST_INTERVAL_SEC: Final[float] = 30.0
 
+# Screen transitions normally use flash-free partial refresh; every Nth
+# transition gets a real full refresh to clear accumulated e-ink ghosting
+# (the same page-flash cadence e-readers use).
+_TRANSITIONS_BETWEEN_FULL_REFRESHES: Final[int] = 5
+
 
 class DisplayError(Exception):
     pass
@@ -65,6 +70,9 @@ class ScreenManager:
         self._selected_feed: Feed | None = None
         self._playing_episode: Episode | None = None
         self._last_position_persist: float = 0.0
+        # Start at the threshold so the very first frame is a full refresh,
+        # giving later partial refreshes a base frame to diff against.
+        self._transitions_since_full_refresh: int = _TRANSITIONS_BETWEEN_FULL_REFRESHES
         self._podcast_screen = PodcastListScreen(feed_repository.get_all())
         self._episode_screen: EpisodeListScreen | None = None
         self._now_playing_screen: NowPlayingScreen | None = None
@@ -233,6 +241,9 @@ class ScreenManager:
     def _show(self, full_refresh: bool) -> None:
         image = self._current_screen().render()
         if full_refresh:
-            self._driver.display(image)
-        else:
-            self._driver.display_partial(image)
+            self._transitions_since_full_refresh += 1
+            if self._transitions_since_full_refresh > _TRANSITIONS_BETWEEN_FULL_REFRESHES:
+                self._transitions_since_full_refresh = 0
+                self._driver.display(image)
+                return
+        self._driver.display_partial(image)
