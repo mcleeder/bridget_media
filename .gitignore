@@ -1,0 +1,14 @@
+# Secrets — SSH credentials for the Pi live here
+.env
+
+# Python
+__pycache__/
+*.pyc
+.mypy_cache/
+.ruff_cache/
+
+# Local database (created at runtime)
+pi_media.db
+
+# Editor / tooling
+.claude/

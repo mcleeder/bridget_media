@@ -1,0 +1,7 @@
+# Runtime dependencies (needed on the Pi and locally).
+# NOTE: deploy/setup_pi.sh installs these on the Pi (Pillow via apt there) —
+# keep its pip list in sync with this file.
+feedparser>=6.0
+python-mpd2>=3.0
+Pillow>=10.0
+APScheduler>=3.10,<4.0

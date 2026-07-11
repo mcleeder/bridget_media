@@ -1,0 +1,20 @@
+# systemd unit for the Pi Media podcast player.
+# @USER@ and @APP_DIR@ are filled in by setup_pi.sh.
+
+[Unit]
+Description=Pi Media podcast player
+After=network-online.target mpd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+# DB_PATH in config.py is relative, so the working directory determines
+# where pi_media.db lives.
+WorkingDirectory=@APP_DIR@
+ExecStart=/usr/bin/python3 main.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

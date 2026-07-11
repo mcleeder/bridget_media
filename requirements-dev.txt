@@ -1,0 +1,4 @@
+# Local development (Windows) — runtime deps plus tooling.
+-r requirements.txt
+mypy>=1.8
+ruff>=0.4
