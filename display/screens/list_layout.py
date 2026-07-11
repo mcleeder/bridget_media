@@ -37,6 +37,11 @@ class ListScroller:
     def can_scroll_down(self) -> bool:
         return self._offset + VISIBLE_ROWS < self._item_count
 
+    def scroll_to(self, offset: int) -> None:
+        """Jump to an offset, clamped to the valid range."""
+        max_offset = max(0, self._item_count - VISIBLE_ROWS)
+        self._offset = max(0, min(offset, max_offset))
+
     def visible_slice(self) -> slice:
         return slice(self._offset, self._offset + VISIBLE_ROWS)
 

@@ -24,6 +24,13 @@ _TITLE_LINE_HEIGHT: Final[int] = 15
 _TITLE_MAX_LINES: Final[int] = 2
 _PROGRESS_RECT: Final[tuple[int, int, int, int]] = (6, 60, DISPLAY_WIDTH - 6, 68)
 _TIME_Y: Final[int] = 73
+
+_ERROR_TEXT: Final[str] = "MPD unreachable"
+_ERROR_FONT_SIZE: Final[int] = 10
+_ERROR_ICON_SIZE: Final[int] = 14
+_ERROR_ICON_GAP: Final[int] = 5
+_ERROR_TOP: Final[int] = 58
+_ERROR_TEXT_Y: Final[int] = 61
 _CONTROLS_TOP: Final[int] = 95
 
 _SKIP_SECONDS: Final[float] = 30.0
@@ -114,25 +121,48 @@ class NowPlayingScreen:
             return None
 
     def _draw_progress(self, draw: ImageDraw.ImageDraw, state: PlaybackState | None) -> None:
+        if state is None:
+            self._draw_playback_error(draw)
+            return
+
         time_font = renderer.load_text_font(_TIME_FONT_SIZE)
 
         fraction = 0.0
-        if state is not None and state.duration_sec:
+        if state.duration_sec:
             fraction = state.elapsed_sec / state.duration_sec
         renderer.draw_progress_bar(draw, _PROGRESS_RECT, fraction)
 
-        elapsed_text = _format_seconds(state.elapsed_sec) if state is not None else "--:--"
-        duration_text = (
-            _format_seconds(state.duration_sec)
-            if state is not None and state.duration_sec
-            else "--:--"
-        )
+        elapsed_text = _format_seconds(state.elapsed_sec)
+        duration_text = _format_seconds(state.duration_sec) if state.duration_sec else "--:--"
         draw.text((6, _TIME_Y), elapsed_text, font=time_font, fill=renderer.BLACK)
         duration_width = int(draw.textlength(duration_text, font=time_font))
         draw.text(
             (DISPLAY_WIDTH - duration_width - 6, _TIME_Y),
             duration_text,
             font=time_font,
+            fill=renderer.BLACK,
+        )
+
+    @staticmethod
+    def _draw_playback_error(draw: ImageDraw.ImageDraw) -> None:
+        """Replace the progress area with an error notice when the player is unreachable."""
+        error_font = renderer.load_text_font(_ERROR_FONT_SIZE)
+        icon_font = renderer.load_icon_font(_ERROR_ICON_SIZE)
+
+        text_width = int(draw.textlength(_ERROR_TEXT, font=error_font))
+        total_width = _ERROR_ICON_SIZE + _ERROR_ICON_GAP + text_width
+        x = (DISPLAY_WIDTH - total_width) // 2
+
+        renderer.draw_icon_centered(
+            draw,
+            renderer.ICON_ERROR_OUTLINE,
+            (x, _ERROR_TOP, x + _ERROR_ICON_SIZE, _ERROR_TOP + _ERROR_ICON_SIZE),
+            icon_font,
+        )
+        draw.text(
+            (x + _ERROR_ICON_SIZE + _ERROR_ICON_GAP, _ERROR_TEXT_Y),
+            _ERROR_TEXT,
+            font=error_font,
             fill=renderer.BLACK,
         )
 

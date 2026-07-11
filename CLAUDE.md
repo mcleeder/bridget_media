@@ -159,11 +159,19 @@ class DisplayDriver(Protocol):
 ```
 pi_media/
 ├── CLAUDE.md
-├── requirements.txt
+├── .env                       # Pi SSH credentials (git-ignored)
+├── requirements.txt           # runtime deps
+├── requirements-dev.txt       # + mypy/ruff (local only)
 ├── pyproject.toml             # ruff + mypy config
 ├── main.py                    # entry point, DI wiring, poll loop
 ├── config.py                  # hardcoded FeedConfig list, settings
 ├── test_display.py            # Pi-only hardware smoke test
+├── deploy/
+│   ├── deploy.sh              # Windows → Pi code sync + service restart
+│   ├── setup_ssh_key.sh       # one-time passwordless SSH setup
+│   ├── setup_pi.sh            # on-Pi provisioning (run once per flash)
+│   ├── pi-media.service       # systemd unit template
+│   └── mpd.conf               # MPD config template (bluez-alsa output)
 ├── db/
 │   ├── __init__.py
 │   ├── database.py            # connection, schema init, DatabaseError
@@ -209,13 +217,28 @@ pi_media/
 # Local setup
 conda create -n pi_media python=3.11
 conda activate pi_media
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # runtime deps + mypy/ruff
 ```
 
-On the Pi, install dependencies directly:
+On the Pi, dependencies are installed by `deploy/setup_pi.sh` (see Deployment). `requirements.txt` is runtime-only and stays the source of truth — keep the pip list in `setup_pi.sh` in sync with it.
+
+## Deployment
+
+Connection details (hostname, user, password) live in `.env` — git-ignored, never commit it.
+
+**Fresh Pi (after a reflash):**
+
 ```bash
-pip install -r requirements.txt
+bash deploy/setup_ssh_key.sh    # one-time: passwordless SSH (prompts for the .env password)
+bash deploy/deploy.sh           # push code to ~/pi_media on the Pi
+ssh <user>@<host>.local 'bash ~/pi_media/deploy/setup_pi.sh'
 ```
+
+`setup_pi.sh` is idempotent: apt packages (MPD, bluez-alsa, GPIO/SPI/I2C libs), enables SPI + I2C, pip runtime deps (`--break-system-packages`, Pillow via apt), clones the Waveshare `Touch_e-Paper_HAT` repo and installs its `TP_lib` with a `waveshare_epd` shim package matching our imports, installs `/etc/mpd.conf` (Bluetooth output via bluez-alsa) and the `pi-media` systemd service. It ends by printing the two manual steps: pair the speaker with `bluetoothctl`, then `configure-speaker <MAC>` (installed helper that patches the MAC into mpd.conf), and reboot.
+
+**Iterating:** `bash deploy/deploy.sh` — tar-over-ssh sync (excludes caches, `.env`, the DB) + service restart. Deleted files are not removed on the Pi. App logs: `journalctl -u pi-media -f`.
+
+Shell scripts, `.service`, and `.conf` files are forced to LF via `.gitattributes` — they execute on the Pi, and CRLF breaks bash there.
 
 ## Coding Standards
 
@@ -359,11 +382,11 @@ python -m mypy --strict . --exclude test_display.py
 
 **Not yet verified on hardware** — everything above ran only against the tkinter simulator. First Pi deployment should confirm: Waveshare partial refresh actually looks right for scrolling, GT1151 touch coordinates map to the same 296×128 space the simulator uses, and MPD streaming works via `NowPlaying`.
 
-### Phase 2 — Polish (next up)
-- [ ] Episode played/unplayed tracking — `EpisodeRepository.mark_played()` and the ● unplayed marker already exist; hook marking into `ScreenManager._apply_side_effects` (on `EpisodeSelected`, or better: when playback passes some threshold), and refresh the cached episode screen so the marker updates
+### Phase 2 — Polish (in progress)
+- [x] Episode played/unplayed tracking — `ScreenManager._mark_played_if_past_threshold()` (called from `refresh_playback()`) marks an episode played once 90% heard (`_PLAYED_FRACTION_THRESHOLD`); on Back from Now Playing the episode screen is rebuilt from the repository (scroll position preserved via `EpisodeListScreen.scroll_offset`) so the ● marker updates
 - [ ] Resume from last position — `play_position_sec` column and `EpisodeRepository.update_play_position()` already exist; persist position periodically from `refresh_playback()` and `seek()` after `play()` when reopening an episode
-- [ ] Mid-session data refresh — the APScheduler background fetch already runs every 4h, but `PodcastListScreen` and cached `EpisodeListScreen` snapshots don't pick up newly fetched episodes until restart; re-query repositories on state entry (or on a fetch-completed signal)
-- [ ] Error states on screen — `ScreenManager` currently degrades playback failures to log lines; surface "MPD unreachable" on the Now Playing screen instead of a dead progress bar
+- [ ] Mid-session data refresh — background fetch runs every 4h, but `PodcastListScreen` doesn't pick up changes until restart; the episode list now re-queries on Back-from-Now-Playing, but entering from the podcast list still uses a fresh query per `FeedSelected`, so the remaining gap is the podcast list itself (re-query on state entry or on a fetch-completed signal)
+- [x] Error states on screen — when `get_state()` raises, `NowPlayingScreen` draws an "MPD unreachable" notice (error icon + text) in place of the progress bar/times; controls stay visible so Back still works
 
 ### Phase 3 — Future
 - [ ] Feed management UI (add/remove RSS feeds) — device has no keyboard; plan is manual file sync of a feeds file the app reads instead of hardcoded `config.FEEDS`
@@ -372,7 +395,7 @@ python -m mypy --strict . --exclude test_display.py
 
 ## Key Notes
 
-- MPD is already configured and running on the Pi. Use `python-mpd2` to connect on `localhost:6600`. If MPD is unreachable at startup, `main.py` logs and continues — the UI still comes up.
+- MPD is installed/configured by `deploy/setup_pi.sh` (plus the manual speaker pairing step). Use `python-mpd2` to connect on `localhost:6600`. If MPD is unreachable at startup, `main.py` logs and continues — the UI still comes up.
 - Waveshare provides Python demo code on their wiki — use it as the display/touch driver base, don't rewrite from scratch.
 - RSS feeds are hardcoded in `config.py` as `FeedConfig` frozen dataclasses (currently 4 feeds so scrolling is exercisable).
 - No audio files stored locally — playback always streams from `episode.audio_url`.

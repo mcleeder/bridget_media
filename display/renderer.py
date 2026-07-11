@@ -22,6 +22,7 @@ ICON_PAUSE: Final[str] = "\ue034"
 ICON_ARROW_UP: Final[str] = "\ue316"
 ICON_ARROW_DOWN: Final[str] = "\ue313"
 ICON_FORWARD_30: Final[str] = "\ue057"
+ICON_ERROR_OUTLINE: Final[str] = "\ue001"
 
 
 @functools.cache

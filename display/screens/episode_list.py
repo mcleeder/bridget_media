@@ -17,10 +17,16 @@ _UNPLAYED_MARKER: Final[str] = "● "
 
 
 class EpisodeListScreen:
-    def __init__(self, feed: Feed, episodes: list[Episode]) -> None:
+    def __init__(self, feed: Feed, episodes: list[Episode], scroll_offset: int = 0) -> None:
         self._feed = feed
         self._episodes = episodes
         self._scroller = layout.ListScroller(len(episodes))
+        self._scroller.scroll_to(scroll_offset)
+
+    @property
+    def scroll_offset(self) -> int:
+        """Current scroll position, so a rebuilt screen can restore it."""
+        return self._scroller.offset
 
     def render(self) -> Image.Image:
         image, draw = renderer.new_canvas()
