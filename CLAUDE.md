@@ -6,9 +6,9 @@ A podcast player running on a Raspberry Pi with a Waveshare 2.9" e-ink touch dis
 
 ## Hardware
 
-- **Raspberry Pi** (model TBD)
+- **Raspberry Pi 3 Model B+** — Raspberry Pi OS (Debian 13 "trixie", arm64), hostname in `.env`
 - **Display**: Waveshare 2.9" Touch E-Paper HAT — 296×128px, black/white, SPI
-- **Touch**: 5-point capacitive, I2C (likely GT1151 controller)
+- **Touch**: 5-point capacitive, I2C (ICNT86 controller — confirmed on hardware; TP_lib's `ICNT_Scan` maps coords into 296×128 landscape space)
 - **Audio**: MPD daemon → Bluetooth speaker via `mpc`
 
 ## Tech Stack
@@ -121,7 +121,7 @@ Now Playing controls are bottom-anchored (y=95..128), four 74px-wide icon button
 
 ## Local Development (Windows)
 
-The Pi Zero W can't run VS Code Remote SSH, so UI development happens locally with a simulator.
+The Pi (1GB RAM) can't comfortably run VS Code Remote SSH, so UI development happens locally with a simulator.
 
 ### How it works
 
@@ -211,7 +211,7 @@ pi_media/
 | Environment | Method |
 |---|---|
 | Local (Windows) | conda env, Python 3.11 |
-| Pi Zero W | System Python (Pi OS Bookworm, 3.11), no venv |
+| Pi 3 Model B+ | System Python (Pi OS trixie, 3.13), no venv |
 
 ```bash
 # Local setup
@@ -234,7 +234,9 @@ bash deploy/deploy.sh           # push code to ~/pi_media on the Pi
 ssh <user>@<host>.local 'bash ~/pi_media/deploy/setup_pi.sh'
 ```
 
-`setup_pi.sh` is idempotent: apt packages (MPD, bluez-alsa, GPIO/SPI/I2C libs), enables SPI + I2C, pip runtime deps (`--break-system-packages`, Pillow via apt), clones the Waveshare `Touch_e-Paper_HAT` repo and installs its `TP_lib` with a `waveshare_epd` shim package matching our imports, installs `/etc/mpd.conf` (Bluetooth output via bluez-alsa) and the `pi-media` systemd service. It ends by printing the two manual steps: pair the speaker with `bluetoothctl`, then `configure-speaker <MAC>` (installed helper that patches the MAC into mpd.conf), and reboot.
+Reflash gotchas: clear the stale host key first (`ssh-keygen -R <host>.local`), and the deploy tooling needs **passwordless sudo** on the Pi — the imager-created user doesn't have it by default (`echo '<user> ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/010_<user>-nopasswd`).
+
+`setup_pi.sh` is idempotent: apt packages (MPD, bluez-alsa, GPIO/SPI/I2C libs), enables SPI + I2C, pip runtime deps (`--break-system-packages`, Pillow via apt), clones the Waveshare `Touch_e-Paper_HAT` repo and installs its `TP_lib` package (imported directly by `display/drivers/waveshare.py`; the panel class is `EPD_2IN9_V2`, touch is `icnt86.INCT86` — Waveshare's own typo), installs `/etc/mpd.conf` (Bluetooth output via bluez-alsa) and the `pi-media` systemd service. It ends by printing the two manual steps: pair the speaker with `bluetoothctl`, then `configure-speaker <MAC>` (installed helper that patches the MAC into mpd.conf), and reboot.
 
 **Iterating:** `bash deploy/deploy.sh` — tar-over-ssh sync (excludes caches, `.env`, the DB) + service restart. Deleted files are not removed on the Pi. App logs: `journalctl -u pi-media -f`.
 
@@ -380,12 +382,13 @@ python -m mypy --strict . --exclude test_display.py
 - [x] Scroll support on both list screens (sidebar chevrons, partial refresh)
 - [x] `mypy --strict` + `ruff` pass clean; navigation and rendering verified end-to-end in the simulator
 
-**Not yet verified on hardware** — everything above ran only against the tkinter simulator. First Pi deployment should confirm: Waveshare partial refresh actually looks right for scrolling, GT1151 touch coordinates map to the same 296×128 space the simulator uses, and MPD streaming works via `NowPlaying`.
+**Hardware bring-up (2026-07-11)** — first Pi deployment done: app boots on the device, e-ink driver initializes (after rewriting `waveshare.py` against TP_lib's real API — `EPD_2IN9_V2` + ICNT86 touch, not the guessed `EPD`/GT1151), and MPD connects on localhost. Still needs human verification on the device: partial-refresh quality when scrolling, touch tap accuracy, and audio out (Bluetooth speaker not yet paired — `bluetoothctl` + `configure-speaker <MAC>`).
 
 ### Phase 2 — Polish (in progress)
 - [x] Episode played/unplayed tracking — `ScreenManager._mark_played_if_past_threshold()` (called from `refresh_playback()`) marks an episode played once 90% heard (`_PLAYED_FRACTION_THRESHOLD`); on Back from Now Playing the episode screen is rebuilt from the repository (scroll position preserved via `EpisodeListScreen.scroll_offset`) so the ● marker updates
 - [ ] Resume from last position — `play_position_sec` column and `EpisodeRepository.update_play_position()` already exist; persist position periodically from `refresh_playback()` and `seek()` after `play()` when reopening an episode
 - [ ] Mid-session data refresh — background fetch runs every 4h, but `PodcastListScreen` doesn't pick up changes until restart; the episode list now re-queries on Back-from-Now-Playing, but entering from the podcast list still uses a fresh query per `FeedSelected`, so the remaining gap is the podcast list itself (re-query on state entry or on a fetch-completed signal)
+- [ ] Faster startup — the blocking startup fetch takes ~2.5 min on the Pi (4 feeds, 100–1000 entries each) before the UI appears; show the podcast list from the DB first and fetch in the background
 - [x] Error states on screen — when `get_state()` raises, `NowPlayingScreen` draws an "MPD unreachable" notice (error icon + text) in place of the progress bar/times; controls stay visible so Back still works
 
 ### Phase 3 — Future

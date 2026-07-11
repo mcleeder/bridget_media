@@ -10,5 +10,5 @@ python_version = "3.11"
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["mpd.*", "feedparser.*", "apscheduler.*", "waveshare_epd.*"]
+module = ["mpd.*", "feedparser.*", "apscheduler.*", "TP_lib.*"]
 ignore_missing_imports = true

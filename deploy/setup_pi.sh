@@ -58,9 +58,8 @@ WAVESHARE_DIR="/opt/Touch_e-Paper_HAT"
 if [[ ! -d "$WAVESHARE_DIR" ]]; then
     sudo git clone --depth 1 https://github.com/waveshareteam/Touch_e-Paper_HAT "$WAVESHARE_DIR"
 fi
-# The repo ships its Python modules (epd2in9_V2, gt1151, epdconfig) in a
-# package named TP_lib; our code imports them as waveshare_epd. Install
-# TP_lib into site-packages and add a shim package that re-exports it.
+# The repo ships its Python modules (epd2in9_V2, icnt86, epdconfig) in a
+# package named TP_lib; display/drivers/waveshare.py imports TP_lib directly.
 TP_LIB_DIR="$(find "$WAVESHARE_DIR" -type d -name TP_lib | head -n 1)"
 if [[ -z "$TP_LIB_DIR" ]]; then
     echo "ERROR: TP_lib not found in $WAVESHARE_DIR — repo layout changed?" >&2
@@ -68,14 +67,11 @@ if [[ -z "$TP_LIB_DIR" ]]; then
 fi
 SITE_PACKAGES="$(python3 -c 'import site; print(site.getsitepackages()[0])')"
 sudo cp -r "$TP_LIB_DIR" "$SITE_PACKAGES/"
-sudo mkdir -p "$SITE_PACKAGES/waveshare_epd"
-sudo tee "$SITE_PACKAGES/waveshare_epd/__init__.py" > /dev/null <<'EOF'
-"""Shim: project code imports waveshare_epd.*; Waveshare's touch HAT repo ships TP_lib."""
-from TP_lib import epd2in9_V2, gt1151  # noqa: F401
-EOF
-python3 -c "from waveshare_epd import epd2in9_V2, gt1151" \
-    && echo "waveshare_epd shim OK" \
-    || echo "WARNING: waveshare_epd import failed — check TP_lib module names in $SITE_PACKAGES/TP_lib"
+# Clean up the waveshare_epd shim an earlier setup_pi.sh version installed
+sudo rm -rf "$SITE_PACKAGES/waveshare_epd"
+python3 -c "from TP_lib import epd2in9_V2, icnt86; epd2in9_V2.EPD_2IN9_V2; icnt86.INCT86" \
+    && echo "TP_lib import OK" \
+    || echo "WARNING: TP_lib import failed — check module names in $SITE_PACKAGES/TP_lib"
 
 echo "=== [5/6] MPD config ==="
 if [[ -f /etc/mpd.conf && ! -f /etc/mpd.conf.orig ]]; then
