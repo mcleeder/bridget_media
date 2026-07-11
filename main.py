@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import logging
+import threading
 import time
+from datetime import datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -39,17 +41,25 @@ def main(simulate: bool) -> None:
         episode_repo = EpisodeRepository(db)
         fetcher = FeedFetcher(feed_repo, episode_repo)
 
-        logger.info("Fetching feeds on startup…")
-        fetcher.fetch_all()
+        # The UI comes up from the database immediately; the first fetch (minutes
+        # on the Pi) runs in the scheduler thread and the main loop reloads the
+        # podcast list when this event fires.
+        fetch_completed = threading.Event()
+
+        def fetch_all_and_signal() -> None:
+            fetcher.fetch_all()
+            fetch_completed.set()
 
         scheduler = BackgroundScheduler()
         scheduler.add_job(
-            fetcher.fetch_all,
+            fetch_all_and_signal,
             trigger="interval",
             hours=config.FEED_REFRESH_INTERVAL_HOURS,
+            next_run_time=datetime.now(),
             id="feed_refresh",
         )
         scheduler.start()
+        logger.info("Feed fetch running in background; showing UI from database")
 
         driver = _build_driver(simulate)
         player = PlayerController()
@@ -75,6 +85,10 @@ def main(simulate: bool) -> None:
             while True:
                 for x, y in driver.read_touch():
                     manager.handle_touch(x, y)
+
+                if fetch_completed.is_set():
+                    fetch_completed.clear()
+                    manager.reload_feeds()
 
                 now = time.monotonic()
                 if now - last_refresh >= _NOW_PLAYING_REFRESH_SEC:

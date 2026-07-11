@@ -14,9 +14,15 @@ _ROW_TEXT_Y_OFFSET: Final[int] = 9
 
 
 class PodcastListScreen:
-    def __init__(self, feeds: list[Feed]) -> None:
+    def __init__(self, feeds: list[Feed], scroll_offset: int = 0) -> None:
         self._feeds = feeds
         self._scroller = layout.ListScroller(len(feeds))
+        self._scroller.scroll_to(scroll_offset)
+
+    @property
+    def scroll_offset(self) -> int:
+        """Current scroll position, so a rebuilt screen can restore it."""
+        return self._scroller.offset
 
     def render(self) -> Image.Image:
         image, draw = renderer.new_canvas()

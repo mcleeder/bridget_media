@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import time
 from collections.abc import Callable
 from typing import Final
 
@@ -18,7 +19,7 @@ from display.events import (
     PlayPauseToggled,
     SkipRequested,
 )
-from display.playback import AudioPlayer
+from display.playback import AudioPlayer, PlaybackState
 from display.screens.base import Screen
 from display.screens.episode_list import EpisodeListScreen
 from display.screens.now_playing import NowPlayingScreen
@@ -29,6 +30,10 @@ logger = logging.getLogger(__name__)
 
 # An episode counts as played once this fraction of it has been heard.
 _PLAYED_FRACTION_THRESHOLD: Final[float] = 0.9
+
+# How often the play position is written to the database while listening —
+# a compromise between resume accuracy and SD-card write wear.
+_POSITION_PERSIST_INTERVAL_SEC: Final[float] = 30.0
 
 
 class DisplayError(Exception):
@@ -52,12 +57,14 @@ class ScreenManager:
         player: AudioPlayer,
     ) -> None:
         self._driver = driver
+        self._feed_repository = feed_repository
         self._episode_repository = episode_repository
         self._player = player
 
         self._state: AppState = AppState.PODCAST_LIST
         self._selected_feed: Feed | None = None
         self._playing_episode: Episode | None = None
+        self._last_position_persist: float = 0.0
         self._podcast_screen = PodcastListScreen(feed_repository.get_all())
         self._episode_screen: EpisodeListScreen | None = None
         self._now_playing_screen: NowPlayingScreen | None = None
@@ -85,8 +92,23 @@ class ScreenManager:
         """Redraw playback progress. Called periodically by the main loop."""
         if self._state is not AppState.NOW_PLAYING:
             return
-        self._mark_played_if_past_threshold()
+        state = self._read_player_state()
+        if state is not None:
+            self._mark_played_if_past_threshold(state)
+            self._persist_position_throttled(state)
         self._show(full_refresh=False)
+
+    def reload_feeds(self) -> None:
+        """Rebuild the podcast list from the database after a background fetch."""
+        try:
+            feeds = self._feed_repository.get_all()
+        except DatabaseError:
+            logger.exception("Could not reload feeds after fetch")
+            return
+        self._podcast_screen = PodcastListScreen(feeds, self._podcast_screen.scroll_offset)
+        logger.info("Podcast list reloaded (%d feeds)", len(feeds))
+        if self._state is AppState.PODCAST_LIST:
+            self._show(full_refresh=False)
 
     def _apply_side_effects(self, event: Event) -> None:
         match event:
@@ -99,7 +121,16 @@ class ScreenManager:
                 self._playing_episode = episode
                 self._now_playing_screen = NowPlayingScreen(episode, feed_name, self._player)
                 self._player_command(lambda: self._player.play(episode.audio_url), "play")
+                if episode.play_position_sec > 0 and not episode.played:
+                    self._player_command(
+                        lambda: self._player.seek(float(episode.play_position_sec)),
+                        "resume from saved position",
+                    )
+                self._last_position_persist = time.monotonic()
             case BackRequested() if self._state is AppState.NOW_PLAYING:
+                state = self._read_player_state()
+                if state is not None:
+                    self._persist_position_now(state)
                 self._player_command(self._player.stop, "stop")
                 self._playing_episode = None
                 self._rebuild_episode_screen()
@@ -112,16 +143,18 @@ class ScreenManager:
             case _:
                 pass
 
-    def _mark_played_if_past_threshold(self) -> None:
-        episode = self._playing_episode
-        if episode is None or episode.played:
-            return
+    def _read_player_state(self) -> PlaybackState | None:
         try:
-            state = self._player.get_state()
+            return self._player.get_state()
         except Exception:
             # Player exception types live above this layer (see layer hierarchy);
-            # without a playback position there is nothing to evaluate.
-            logger.debug("Playback state unavailable, skipping played check", exc_info=True)
+            # callers treat None as "playback state unavailable".
+            logger.debug("Playback state unavailable", exc_info=True)
+            return None
+
+    def _mark_played_if_past_threshold(self, state: PlaybackState) -> None:
+        episode = self._playing_episode
+        if episode is None or episode.played:
             return
         # MPD usually knows the stream duration; fall back to the feed's value.
         duration = state.duration_sec or episode.duration_sec
@@ -129,12 +162,30 @@ class ScreenManager:
             return
         try:
             self._episode_repository.mark_played(episode.id)
+            # A played episode restarts from the beginning next time.
+            self._episode_repository.update_play_position(episode.id, 0)
         except DatabaseError:
             logger.exception("Could not mark episode %d as played", episode.id)
             return
         # Replace the cached copy so the check doesn't re-fire every refresh
         self._playing_episode = dataclasses.replace(episode, played=True)
         logger.info("Episode marked played: %s", episode.title)
+
+    def _persist_position_throttled(self, state: PlaybackState) -> None:
+        if time.monotonic() - self._last_position_persist < _POSITION_PERSIST_INTERVAL_SEC:
+            return
+        self._persist_position_now(state)
+
+    def _persist_position_now(self, state: PlaybackState) -> None:
+        episode = self._playing_episode
+        if episode is None or episode.played:
+            return
+        try:
+            self._episode_repository.update_play_position(episode.id, int(state.elapsed_sec))
+        except DatabaseError:
+            logger.exception("Could not save play position for episode %d", episode.id)
+            return
+        self._last_position_persist = time.monotonic()
 
     def _rebuild_episode_screen(self) -> None:
         """Re-query the selected feed so played markers and new episodes are current."""
@@ -145,14 +196,15 @@ class ScreenManager:
         self._episode_screen = EpisodeListScreen(self._selected_feed, episodes, scroll_offset)
 
     def _toggle_play_pause(self) -> None:
-        try:
-            is_playing = self._player.get_state().is_playing
-        except Exception:
-            # Player exception types live above this layer (see layer hierarchy);
-            # without playback state there is nothing sensible to toggle.
+        state = self._read_player_state()
+        if state is None:
+            # Without playback state there is nothing sensible to toggle.
             logger.warning("Cannot toggle play/pause: playback state unavailable")
             return
-        if is_playing:
+        if state.is_playing:
+            # Save the position on pause so a crash or shutdown while paused
+            # still resumes from the right place.
+            self._persist_position_now(state)
             self._player_command(self._player.pause, "pause")
         else:
             self._player_command(self._player.resume, "resume")

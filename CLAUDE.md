@@ -386,19 +386,21 @@ python -m mypy --strict . --exclude test_display.py
 
 ### Phase 2 — Polish (in progress)
 - [x] Episode played/unplayed tracking — `ScreenManager._mark_played_if_past_threshold()` (called from `refresh_playback()`) marks an episode played once 90% heard (`_PLAYED_FRACTION_THRESHOLD`); on Back from Now Playing the episode screen is rebuilt from the repository (scroll position preserved via `EpisodeListScreen.scroll_offset`) so the ● marker updates
-- [ ] Resume from last position — `play_position_sec` column and `EpisodeRepository.update_play_position()` already exist; persist position periodically from `refresh_playback()` and `seek()` after `play()` when reopening an episode
-- [ ] Mid-session data refresh — background fetch runs every 4h, but `PodcastListScreen` doesn't pick up changes until restart; the episode list now re-queries on Back-from-Now-Playing, but entering from the podcast list still uses a fresh query per `FeedSelected`, so the remaining gap is the podcast list itself (re-query on state entry or on a fetch-completed signal)
-- [ ] Faster startup — the blocking startup fetch takes ~2.5 min on the Pi (4 feeds, 100–1000 entries each) before the UI appears; show the podcast list from the DB first and fetch in the background
+- [x] Resume from last position — position persisted every 30s from `refresh_playback()` (`_POSITION_PERSIST_INTERVAL_SEC`, throttled to limit SD writes) plus immediately on pause and on Back; `seek()` (now on the `AudioPlayer` Protocol) is issued right after `play()` when `play_position_sec > 0` and the episode isn't played; marking played resets the stored position to 0 so replays start fresh. The seek-right-after-play timing against a live MPD stream still needs on-device confirmation
+- [x] Mid-session data refresh — the fetch job sets a `threading.Event` (wired in `main.py`); the main loop calls `ScreenManager.reload_feeds()` on the UI thread, which re-queries feeds, preserves scroll, and partial-refreshes only if the podcast list is showing. Covers both first-boot fill-in and the 4h background refresh
+- [x] Faster startup — the startup fetch no longer blocks: the scheduler job runs with `next_run_time=now` in its own thread and the UI comes up from the DB immediately; the fetch-completed event above fills the list in afterwards
 - [x] Error states on screen — when `get_state()` raises, `NowPlayingScreen` draws an "MPD unreachable" notice (error icon + text) in place of the progress bar/times; controls stay visible so Back still works
 
 ### Phase 3 — Future
-- [ ] Feed management UI (add/remove RSS feeds) — device has no keyboard; plan is manual file sync of a feeds file the app reads instead of hardcoded `config.FEEDS`
+- [ ] Feed management UI (add/remove RSS feeds) — device has no keyboard; plan is manual file sync of a feeds file the app reads instead of hardcoded `config.FEEDS`. Note: feeds removed from config are never pruned from the DB, so they linger on the podcast list (visible in the local dev DB, which still has 'Hardcore History')
 - [ ] Listen history screen
 - [ ] Web interface for remote management
 
 ## Key Notes
 
 - MPD is installed/configured by `deploy/setup_pi.sh` (plus the manual speaker pairing step). Use `python-mpd2` to connect on `localhost:6600`. If MPD is unreachable at startup, `main.py` logs and continues — the UI still comes up.
+- MPD drops idle client connections after 60s (`connection_timeout` default) and restarts when `configure-speaker` runs — `PlayerController._execute()` therefore reconnects once and retries on connection loss. Without it, browsing lists for over a minute killed all playback commands ("MPD unreachable") until an app restart.
+- Podcast audio URLs sit behind ad/tracking redirect chains that can exceed MPD's hard limit of 5 (Radiolab's is 6+), and MPD fails *asynchronously* — `play` is accepted, the decode error lands a second later and MPD ends up **stopped**. `PlayerController` therefore (a) resolves redirects app-side before queueing (`_resolve_stream_url`, ranged GET with a player User-Agent — some trackers 403 Python's default), and (b) `resume()` issues `play` when MPD is stopped, since `pause(0)` is a silent no-op there.
 - Waveshare provides Python demo code on their wiki — use it as the display/touch driver base, don't rewrite from scratch.
 - RSS feeds are hardcoded in `config.py` as `FeedConfig` frozen dataclasses (currently 4 feeds so scrolling is exercisable).
 - No audio files stored locally — playback always streams from `episode.audio_url`.
