@@ -14,6 +14,9 @@ class PlaybackState(Protocol):
     def is_playing(self) -> bool: ...
 
     @property
+    def is_stopped(self) -> bool: ...
+
+    @property
     def elapsed_sec(self) -> float: ...
 
     @property

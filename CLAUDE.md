@@ -100,7 +100,7 @@ CREATE TABLE queue (
 );
 ```
 
-The queue is FIFO (`ORDER BY id`, no position column). `UNIQUE(episode_id)` + `INSERT OR IGNORE` make double-queueing a no-op. Entries are removed when an episode **finishes** (Phase 5's auto-advance), not when it starts — restarting mid-episode keeps the entry.
+The queue is FIFO (`ORDER BY id`, no position column). `UNIQUE(episode_id)` + `INSERT OR IGNORE` make double-queueing a no-op. Entries are removed when an episode **finishes** (auto-advance, `ScreenManager._advance_queue`), not when it starts — restarting mid-episode keeps the entry.
 
 ## Display / UI
 
@@ -429,7 +429,7 @@ python -m mypy --strict . --exclude test_display.py
 - [x] Episode list + button: `ACTION_X = SIDEBAR_X - 36` zone in `list_layout.py`; toggles queue membership via `QueueToggled(episode)` (`ICON_PLAYLIST_ADD e03b` ↔ `ICON_PLAYLIST_ADD_CHECK e065`); titles clip at `ACTION_X - 12`
 - [x] `QueueListScreen` (`display/screens/queue_list.py`): title + feed-name rows, `ICON_REMOVE_CIRCLE_OUTLINE e15d` in action zone → `QueueRemoveRequested`, row tap → `EpisodeSelected`, header "Next" with back icon
 - [x] Manager: `queue_repository` dep; extracted `_start_episode(episode)` (feed name via `get_by_id`, not `_selected_feed` — queue playback has no selected feed); Back-from-NOW_PLAYING rebuilds episode **or** queue screen per `_now_playing_origin`; `QueueToggled | QueueRemoveRequested` join the partial-refresh event tuple
-- [x] Queue entries are removed on natural finish, not on start (restart mid-episode keeps the entry) — removal side is Phase 5's auto-advance; today entries persist until removed by hand
+- [x] Queue entries are removed on natural finish, not on start (restart mid-episode keeps the entry) — removal side landed with Phase 5's auto-advance
 - [x] Verify-skill coords: action zone at (240, 40)/(240, 75)/(240, 110)
 - Verified via scripted-touch harness (18 checks: toggle on/off, FIFO order, feed-name join, remove, play-from-queue with correct URL, origin-aware Back both ways) + simulator smoke run; ruff + `mypy --strict` clean
 
@@ -439,11 +439,12 @@ python -m mypy --strict . --exclude test_display.py
 - Queue side effects in the manager go through `_queue_command` (mirrors `_player_command`): a residual `DatabaseError` degrades to a log line, not a UI crash
 - `ScreenManager.handle_touch` debounces: taps within `_TOUCH_DEBOUNCE_SEC` (300ms) of the last are ignored. Capacitive jitter can emit one physical tap as two events (the driver's held-finger filter only matches exact coordinates), and a double-fire on a toggle silently undoes it
 
-### Phase 5 — Auto-Advance (simulator-shippable; confirm on Pi)
-- [ ] `PlaybackState.is_stopped` (MPD `state == "stop"`) in `player/controller.py` + the `display/playback.py` Protocol
-- [ ] Natural-finish rule: current poll `is_stopped` AND previous poll `is_playing` with `elapsed/duration ≥ _PLAYED_FRACTION_THRESHOLD` (manager keeps `_last_playback_state`; reset on stop/new episode). Immune to decode-failure stops (far from end) and user Back (clears `_playing_episode` first)
-- [ ] `refresh_playback()` restructure: poll whenever `_playing_episode` is set (any screen), `_show` only on NOW_PLAYING — fixes mark-played/persist silently stopping off-screen; guard `_persist_position_throttled` with `is_playing` so a stopped state can't zero a saved position
-- [ ] `_advance_queue()`: remove finished from queue, defensively mark played, `first_entry()` → `_start_episode`; rebuild NOW_PLAYING/QUEUE screen if showing. Any natural finish pops the queue head, queue-started or not
+### Phase 5 — Auto-Advance ✅ COMPLETE (2026-07-13 — simulator-verified; confirm on Pi with real MPD)
+- [x] `PlaybackState.is_stopped` (MPD `state == "stop"`) in `player/controller.py` + the `display/playback.py` Protocol
+- [x] Natural-finish rule (`_is_natural_finish`): current poll `is_stopped` AND previous poll `is_playing` with `elapsed/duration ≥ _PLAYED_FRACTION_THRESHOLD` (manager keeps `_last_playback_state`; reset on stop/new episode). Immune to decode-failure stops (far from end) and user Back (clears `_playing_episode` first)
+- [x] `refresh_playback()` restructure: `_poll_playback()` runs whenever `_playing_episode` is set (any screen), `_show` only on NOW_PLAYING — fixes mark-played/persist silently stopping off-screen; `_persist_position_throttled` guarded with `is_playing` so a stopped state (elapsed 0) can't zero a saved position
+- [x] `_advance_queue()`: remove finished from queue, defensively mark played (shared `_mark_episode_played` helper), `first_entry()` → `_start_episode`; rebuilds QUEUE/EPISODE_LIST screen if showing (NOW_PLAYING is replaced by `_start_episode` and redrawn by the poll's trailing `_show`). Any natural finish pops the queue head, queue-started or not. Wrapped in `except DatabaseError` — a DB hiccup logs, doesn't kill the loop, and can't re-fire (`_playing_episode` cleared first)
+- Verified via 26-check scripted-touch harness (queue playback → two consecutive natural finishes → queue drained; decode-failure immunity; stopped-poll position guard; user-Back immunity) + simulator smoke run; ruff + `mypy --strict` clean
 
 ### Phase 6 — Bluetooth Screen + Pairing Script + Aux Output (Pi-verified)
 - [ ] `bluetooth/controller.py`: `BluetoothController`, `BluetoothError`, frozen `BluetoothDevice(mac, name, is_connected)`; `bluetoothctl` via `subprocess.run(..., timeout=…)` — `devices Paired` (fallback `paired-devices`), `info <MAC>` → "Connected: yes", `connect` (20s), `disconnect` (10s)

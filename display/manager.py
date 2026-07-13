@@ -83,6 +83,9 @@ class ScreenManager:
         self._state: AppState = AppState.HOME
         self._selected_feed: Feed | None = None
         self._playing_episode: Episode | None = None
+        # Previous playback poll — natural-finish detection compares two
+        # consecutive polls. Reset whenever playback (re)starts or stops.
+        self._last_playback_state: PlaybackState | None = None
         # Where Back from Now Playing returns to — see transition()
         self._now_playing_origin: AppState = AppState.EPISODE_LIST
         self._last_position_persist: float = 0.0
@@ -127,14 +130,37 @@ class ScreenManager:
             self._show(full_refresh=False)
 
     def refresh_playback(self) -> None:
-        """Redraw playback progress. Called periodically by the main loop."""
-        if self._state is not AppState.NOW_PLAYING:
-            return
+        """Poll playback and redraw progress. Called periodically by the main loop.
+
+        Polling runs whenever an episode is active, whatever screen is showing —
+        mark-played, position persistence, and queue auto-advance must not stop
+        because the user navigated away — but only Now Playing is redrawn.
+        """
+        if self._playing_episode is not None:
+            self._poll_playback()
+        if self._state is AppState.NOW_PLAYING:
+            self._show(full_refresh=False)
+
+    def _poll_playback(self) -> None:
         state = self._read_player_state()
-        if state is not None:
-            self._mark_played_if_past_threshold(state)
+        if state is None:
+            return
+        previous = self._last_playback_state
+        self._last_playback_state = state
+        if self._is_natural_finish(previous, state):
+            try:
+                self._advance_queue()
+            except DatabaseError:
+                # A DB hiccup must not kill the UI loop. The advance won't
+                # re-fire: _playing_episode is already cleared, so polling
+                # stops until the user starts something new.
+                logger.exception("Queue auto-advance failed")
+            return
+        self._mark_played_if_past_threshold(state)
+        # Only a playing elapsed value is trustworthy — MPD reports elapsed 0
+        # when stopped, which would zero a good saved position.
+        if state.is_playing:
             self._persist_position_throttled(state)
-        self._show(full_refresh=False)
 
     def reload_feeds(self) -> None:
         """Rebuild the podcast list from the database after a background fetch."""
@@ -165,6 +191,7 @@ class ScreenManager:
                     self._persist_position_now(state)
                 self._player_command(self._player.stop, "stop")
                 self._playing_episode = None
+                self._last_playback_state = None
                 # Rebuild whichever list Back returns to, so played markers
                 # and queue membership are current.
                 if self._now_playing_origin is AppState.QUEUE:
@@ -193,6 +220,56 @@ class ScreenManager:
             logger.debug("Playback state unavailable", exc_info=True)
             return None
 
+    def _is_natural_finish(
+        self, previous: PlaybackState | None, current: PlaybackState
+    ) -> bool:
+        """A natural finish is a stop observed right after playing near the end.
+
+        The near-the-end requirement filters out decode-failure stops (which
+        land far from the end); user-initiated stops never reach here because
+        Back clears _playing_episode before stopping the player.
+        """
+        if previous is None or not current.is_stopped or not previous.is_playing:
+            return False
+        episode = self._playing_episode
+        # MPD usually knows the stream duration; fall back to the feed's value.
+        duration = previous.duration_sec or (episode.duration_sec if episode else None)
+        if not duration:
+            return False
+        return previous.elapsed_sec / duration >= _PLAYED_FRACTION_THRESHOLD
+
+    def _advance_queue(self) -> None:
+        """Handle a natural finish: pop the queue and start whatever is next.
+
+        The finished episode's queue entry is dropped whether or not playback
+        started from the queue, and any natural finish starts the queue head.
+        """
+        finished = self._playing_episode
+        self._playing_episode = None
+        self._last_playback_state = None
+        if finished is not None:
+            self._queue_command(
+                lambda: self._queue_repository.remove(finished.id),
+                "remove finished episode",
+            )
+            if not finished.played:
+                # Normally the 90% threshold already fired; this catches a DB
+                # hiccup there so a finished episode never stays unplayed.
+                self._mark_episode_played(finished)
+        next_entry = self._queue_repository.first_entry()
+        if next_entry is not None:
+            logger.info("Auto-advancing to queued episode: %s", next_entry.episode.title)
+            self._start_episode(next_entry.episode)
+        # Refresh whichever screen shows now-stale data. NOW_PLAYING needs no
+        # rebuild here: _start_episode replaced it, and refresh_playback's
+        # trailing _show redraws it either way.
+        if self._state is AppState.QUEUE:
+            self._rebuild_queue_screen()
+            self._show(full_refresh=False)
+        elif self._state is AppState.EPISODE_LIST:
+            self._rebuild_episode_screen()
+            self._show(full_refresh=False)
+
     def _mark_played_if_past_threshold(self, state: PlaybackState) -> None:
         episode = self._playing_episode
         if episode is None or episode.played:
@@ -201,16 +278,20 @@ class ScreenManager:
         duration = state.duration_sec or episode.duration_sec
         if not duration or state.elapsed_sec / duration < _PLAYED_FRACTION_THRESHOLD:
             return
+        if self._mark_episode_played(episode):
+            # Replace the cached copy so the check doesn't re-fire every refresh
+            self._playing_episode = dataclasses.replace(episode, played=True)
+
+    def _mark_episode_played(self, episode: Episode) -> bool:
         try:
             self._episode_repository.mark_played(episode.id)
             # A played episode restarts from the beginning next time.
             self._episode_repository.update_play_position(episode.id, 0)
         except DatabaseError:
             logger.exception("Could not mark episode %d as played", episode.id)
-            return
-        # Replace the cached copy so the check doesn't re-fire every refresh
-        self._playing_episode = dataclasses.replace(episode, played=True)
+            return False
         logger.info("Episode marked played: %s", episode.title)
+        return True
 
     def _persist_position_throttled(self, state: PlaybackState) -> None:
         if time.monotonic() - self._last_position_persist < _POSITION_PERSIST_INTERVAL_SEC:
@@ -237,6 +318,7 @@ class ScreenManager:
         feed = self._feed_repository.get_by_id(episode.feed_id)
         feed_name = feed.name if feed is not None else ""
         self._playing_episode = episode
+        self._last_playback_state = None
         self._now_playing_screen = NowPlayingScreen(episode, feed_name, self._player)
         self._player_command(lambda: self._player.play(episode.audio_url), "play")
         if episode.play_position_sec > 0 and not episode.played:

@@ -55,6 +55,7 @@ class PlayerError(Exception):
 @dataclass(frozen=True)
 class PlaybackState:
     is_playing: bool
+    is_stopped: bool
     current_url: str | None
     elapsed_sec: float
     duration_sec: float | None
@@ -129,6 +130,7 @@ class PlayerController:
             current_song = client.currentsong()
 
             is_playing = status.get("state") == "play"
+            is_stopped = status.get("state") == "stop"
             current_url = current_song.get("file") if current_song else None
             elapsed_sec = float(status.get("elapsed", 0.0))
             raw_duration = status.get("duration")
@@ -136,6 +138,7 @@ class PlayerController:
 
             return PlaybackState(
                 is_playing=is_playing,
+                is_stopped=is_stopped,
                 current_url=current_url,
                 elapsed_sec=elapsed_sec,
                 duration_sec=duration_sec,
