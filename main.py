@@ -9,6 +9,7 @@ from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 
 import config
+from bluetooth import BluetoothController
 from db import Database, EpisodeRepository, FeedRepository, QueueRepository
 from display.drivers.base import DisplayDriver
 from display.manager import ScreenManager
@@ -68,6 +69,7 @@ def main(simulate: bool) -> None:
 
         driver = _build_driver(simulate)
         player = PlayerController()
+        bluetooth = BluetoothController()
 
         if not simulate:
             try:
@@ -83,6 +85,7 @@ def main(simulate: bool) -> None:
             episode_repository=episode_repo,
             queue_repository=queue_repo,
             player=player,
+            bluetooth=bluetooth,
         )
 
         last_refresh = time.monotonic()

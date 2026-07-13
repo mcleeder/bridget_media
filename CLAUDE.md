@@ -59,18 +59,18 @@ Transitions:
 |---|---|---|
 | HOME | HomeMenuSelected(PODCASTS) | PODCAST_LIST |
 | HOME | HomeMenuSelected(QUEUE) | QUEUE |
-| HOME | HomeMenuSelected(BLUETOOTH) | BLUETOOTH *(arm lands in Phase 6 — no-op today)* |
+| HOME | HomeMenuSelected(BLUETOOTH) | BLUETOOTH |
 | PODCAST_LIST | FeedSelected | EPISODE_LIST |
 | PODCAST_LIST | BackRequested | HOME |
 | EPISODE_LIST | EpisodeSelected | NOW_PLAYING (starts playback) |
 | EPISODE_LIST | BackRequested | PODCAST_LIST |
 | QUEUE | EpisodeSelected / BackRequested | NOW_PLAYING / HOME |
-| BLUETOOTH | BackRequested | HOME *(Phase 6)* |
+| BLUETOOTH | BackRequested | HOME |
 | NOW_PLAYING | BackRequested (stops playback) | `now_playing_origin` |
 
-Anything else is a no-op that keeps the current state. Initial state is HOME. `_current_screen()` has a `DisplayError`-raising placeholder arm for BLUETOOTH until its screen exists (Phase 6). `QueueToggled` / `QueueRemoveRequested` don't navigate — the manager updates the queue in the DB, rebuilds the current list screen (scroll preserved), and partial-refreshes.
+Anything else is a no-op that keeps the current state. Initial state is HOME. `QueueToggled` / `QueueRemoveRequested` / `BluetoothDeviceSelected` don't navigate — the manager updates the queue/bluetooth state, rebuilds the current list screen (scroll preserved), and partial-refreshes.
 
-`display` never imports `player`: playback flows through the `AudioPlayer` / `PlaybackState` Protocols in `display/playback.py`, which `PlayerController` satisfies structurally. `ScreenManager` wraps player calls in a broad `except Exception` (with a why-comment) because the player's exception types live above the display layer — a playback failure degrades to a log line, never a UI crash. This is also what makes the simulator work on Windows with no MPD.
+`display` never imports `player` or `bluetooth`: playback flows through the `AudioPlayer` / `PlaybackState` Protocols in `display/playback.py` (satisfied structurally by `PlayerController`), and Bluetooth flows through the `BluetoothDevice` / `BluetoothService` Protocols in `display/bluetooth_control.py` (satisfied structurally by `BluetoothController`). `ScreenManager` wraps both player and bluetooth calls in a broad `except Exception` (with a why-comment) because their exception types live above the display layer — a failure degrades to a log line, never a UI crash. This is also what makes the simulator work on Windows with no MPD or `bluetoothctl`.
 
 ## Database Schema
 
@@ -118,7 +118,7 @@ The queue is FIFO (`ORDER BY id`, no position column). `UNIQUE(episode_id)` + `I
 3. **Episode List** — episodes for selected feed (title + date, ● = unplayed); tap header to go back, tap a row to play, tap the action-zone icon (+ / ✓) to toggle queue membership
 4. **Now Playing** — feed name, wrapped episode title (2 lines max), progress bar with elapsed/total times, bottom control bar; Back returns to whichever screen started playback
 5. **Next (queue)** — FIFO queue: episode title + feed name per row, remove icon in the action zone, tap a row to play (Back from Now Playing returns here); "Queue is empty" state
-6. **Bluetooth** — Phase 6.
+6. **Bluetooth** — paired-device rows (name + "Connected"/"Tap to connect"), `ICON_BLUETOOTH_CONNECTED` on the connected one; tap an unconnected row to switch to it, tap the connected row to disconnect; "Bluetooth unreachable" error state (no `bluetoothctl` — always true on Windows) and an empty state pointing at `deploy/pair_speaker.sh`
 
 ### Layout & Touch Zones
 
@@ -189,8 +189,9 @@ pi_media/
 │   ├── deploy.sh              # Windows → Pi code sync + service restart
 │   ├── setup_ssh_key.sh       # one-time passwordless SSH setup
 │   ├── setup_pi.sh            # on-Pi provisioning (run once per flash)
+│   ├── pair_speaker.sh        # Windows → SSH: scan/pair/trust/connect + configure-speaker
 │   ├── pi-media.service       # systemd unit template
-│   └── mpd.conf               # MPD config template (bluez-alsa output, ffmpeg mp3 decoding)
+│   └── mpd.conf               # MPD config template (bluez-alsa + aux outputs, ffmpeg mp3 decoding)
 ├── db/
 │   ├── __init__.py
 │   ├── database.py            # connection, schema init, DatabaseError
@@ -202,11 +203,15 @@ pi_media/
 ├── player/
 │   ├── __init__.py
 │   └── controller.py          # python-mpd2 wrapper, PlaybackState
+├── bluetooth/
+│   ├── __init__.py
+│   └── controller.py          # bluetoothctl subprocess wrapper, BluetoothDevice, BluetoothError
 ├── display/
 │   ├── __init__.py
 │   ├── events.py              # typed Event dataclasses
 │   ├── state_machine.py       # AppState enum + pure transition()
 │   ├── playback.py            # AudioPlayer / PlaybackState Protocols
+│   ├── bluetooth_control.py   # BluetoothDevice / BluetoothService Protocols
 │   ├── manager.py             # ScreenManager (drives the machine), DisplayError
 │   ├── renderer.py            # PIL helpers, fonts, ICON_* glyph constants
 │   ├── drivers/
@@ -222,7 +227,8 @@ pi_media/
 │       ├── podcast_list.py
 │       ├── episode_list.py
 │       ├── queue_list.py
-│       └── now_playing.py
+│       ├── now_playing.py
+│       └── bluetooth_list.py
 └── assets/
     └── fonts/                 # DejaVuSans.ttf, MaterialIcons-Regular.ttf (+ .codepoints)
 ```
@@ -322,13 +328,13 @@ class ScreenManager:
 ```
 config          (constants only, no imports from project)
     ↓
-db              (knows config, knows nothing else)
+db                        (knows config, knows nothing else)
     ↓
-feeds / player  (know db, know config)
+feeds / player / bluetooth (know db, know config — bluetooth needs neither, it only shells out)
     ↓
-display         (knows feeds/player through injected interfaces, never imports them directly)
+display                  (knows feeds/player/bluetooth through injected interfaces, never imports them directly)
     ↓
-main            (imports everything, wires the graph, runs the loop)
+main                      (imports everything, wires the graph, runs the loop)
 ```
 
 A layer must never import from the layer above it. If you feel the urge to do so, the logic belongs in a different layer.
@@ -339,6 +345,7 @@ A layer must never import from the layer above it. If you feel the urge to do so
   class FeedFetchError(Exception): ...
   class DatabaseError(Exception): ...
   class PlayerError(Exception): ...
+  class BluetoothError(Exception): ...
   class DisplayError(Exception): ...
   ```
 - Raw library exceptions (`mpd.ConnectionError`, `sqlite3.OperationalError`, etc.) are caught at the layer boundary and re-raised as the layer's own type.
@@ -446,15 +453,17 @@ python -m mypy --strict . --exclude test_display.py
 - [x] `_advance_queue()`: remove finished from queue, defensively mark played (shared `_mark_episode_played` helper), `first_entry()` → `_start_episode`; rebuilds QUEUE/EPISODE_LIST screen if showing (NOW_PLAYING is replaced by `_start_episode` and redrawn by the poll's trailing `_show`). Any natural finish pops the queue head, queue-started or not. Wrapped in `except DatabaseError` — a DB hiccup logs, doesn't kill the loop, and can't re-fire (`_playing_episode` cleared first)
 - Verified via 26-check scripted-touch harness (queue playback → two consecutive natural finishes → queue drained; decode-failure immunity; stopped-poll position guard; user-Back immunity) + simulator smoke run; ruff + `mypy --strict` clean
 
-### Phase 6 — Bluetooth Screen + Pairing Script + Aux Output (Pi-verified)
-- [ ] `bluetooth/controller.py`: `BluetoothController`, `BluetoothError`, frozen `BluetoothDevice(mac, name, is_connected)`; `bluetoothctl` via `subprocess.run(..., timeout=…)` — `devices Paired` (fallback `paired-devices`), `info <MAC>` → "Connected: yes", `connect` (20s), `disconnect` (10s)
-- [ ] `display/bluetooth_control.py`: `BluetoothDevice` + `BluetoothService` Protocols (mirrors `playback.py`); manager gets a `_bluetooth_command` wrapper (errors → status text, like `_player_command`)
-- [ ] `activate_device` = connect + `sudo -n /usr/local/bin/configure-speaker <MAC>` (MPD restart heals via `_execute` reconnect); screen draws a "Connecting…" partial frame, then blocks (~20s poll-loop pause is fine)
-- [ ] `BluetoothScreen` (`display/screens/bluetooth_list.py`): device rows, `ICON_BLUETOOTH_CONNECTED e1a8` on the connected one; tap unconnected → switch, tap connected → disconnect; empty state points at `deploy/pair_speaker.sh`
-- [ ] `deploy/pair_speaker.sh` (Git Bash → SSH, deploy.sh conventions): `sudo rfkill unblock bluetooth` → `power on` → `--timeout 15 scan on` (required before `pair` accepts the MAC) → `pair`/`trust`/`connect` → `configure-speaker`; `--scan` mode just lists MACs
-- [ ] Aux mirror: second `audio_output` in `deploy/mpd.conf` — `type "alsa"`, `device "plughw:CARD=Headphones"` (card-by-name is reboot-stable), `mixer_type "software"`; setup_pi.sh gets an idempotent append (grep-guard + `tee -a` + mpd restart) because the no-clobber MAC guard stops template updates reaching a configured Pi; decoder blocks untouched
-- [ ] setup_pi.sh: `usermod -aG bluetooth "$RUN_USER"` (only `mpd` has it today)
-- [ ] On Windows the Bluetooth screen shows the error status (no bluetoothctl) — expected
+### Phase 6 — Bluetooth Screen + Pairing Script + Aux Output ✅ COMPLETE (2026-07-13 — Pi-verified)
+- [x] `bluetooth/controller.py`: `BluetoothController`, `BluetoothError`, frozen `BluetoothDevice(mac, name, is_connected)`; `bluetoothctl` via `subprocess.run(..., timeout=…)` — `devices Paired` (fallback `paired-devices`), `info <MAC>` → "Connected: yes", `connect` (20s), `disconnect` (10s)
+- [x] `display/bluetooth_control.py`: `BluetoothDevice` + `BluetoothService` Protocols (mirrors `playback.py`); the service method returns `Sequence[BluetoothDevice]` rather than `list[...]` — `list` is invariant, so a concrete `list[bluetooth.controller.BluetoothDevice]` wouldn't satisfy a `list[Protocol]`-typed return under `mypy --strict`. Manager gets a `_bluetooth_command` wrapper (broad `except Exception` → log line, mirrors `_player_command`)
+- [x] `activate_device` = connect + `sudo -n /usr/local/bin/configure-speaker <MAC>` (MPD restart heals via `PlayerController._execute`'s existing reconnect); `ScreenManager._show_bluetooth_connecting` draws a "Connecting…" partial frame *before* the blocking call — the one spot that deviates from the normal one-redraw-after-side-effects flow, since the block is ~20s
+- [x] `BluetoothScreen` (`display/screens/bluetooth_list.py`): device rows, `ICON_BLUETOOTH_CONNECTED` on the connected one; tap unconnected → switch (via `activate_device`), tap connected → disconnect; whole row is the tap target (no separate action-zone icon, unlike queue/episode lists); "Bluetooth unreachable" error state and an empty state pointing at `deploy/pair_speaker.sh`
+- [x] `deploy/pair_speaker.sh` (Git Bash → SSH, deploy.sh conventions): `sudo rfkill unblock bluetooth` → `power on` → `--timeout 15 scan on` (required before `pair` accepts the MAC) → `pair`/`trust`/`connect` → `configure-speaker`; `--scan` mode just lists MACs
+- [x] Aux mirror: second `audio_output` in `deploy/mpd.conf` — `type "alsa"`, `device "plughw:CARD=Headphones"` (card-by-name is reboot-stable), `mixer_type "software"`; `setup_pi.sh` gets an idempotent append (grep-guard + `tee -a` + mpd restart) because the no-clobber MAC guard stops template updates reaching a configured Pi; decoder blocks untouched
+- [x] `setup_pi.sh`: `bluetooth` added to the existing `usermod -aG spi,i2c,gpio "$RUN_USER"` line — needed because `bluetoothctl connect` runs as the app user, unlike `configure-speaker` which runs via passwordless sudo
+- [x] On Windows the Bluetooth screen shows the "Bluetooth unreachable" error status (no `bluetoothctl`) — expected, verified via the scripted-touch harness's `raise_on_list` case
+
+**Pi verification (2026-07-13)** — `deploy/deploy.sh` + a re-run of `setup_pi.sh` (idempotent) confirmed: `mike_pi` gained the `bluetooth` group, the aux `audio_output` block landed in `/etc/mpd.conf`, and `pi-media`/`mpd` both stayed healthy through the re-provision. `BluetoothController` exercised directly over SSH against the real `bluetoothctl` and the already-paired EarFun UBOOM L: `list_paired_devices()` correctly reported it connected, `disconnect_device()` flipped it to disconnected, and `activate_device()` (connect + `configure-speaker`, which restarts MPD) reconnected it — `PlayerController` healed from the MPD restart with no errors in `journalctl`. Interactive pairing via `pair_speaker.sh` wasn't exercised since the speaker was already paired+trusted; that path remains to be run the next time a new device is paired.
 
 
 ## Key Notes

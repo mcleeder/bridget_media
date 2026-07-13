@@ -5,6 +5,7 @@ from enum import Enum, auto
 from typing import TypeAlias
 
 from db.models import Episode, Feed
+from display.bluetooth_control import BluetoothDevice
 
 
 class HomeMenuItem(Enum):
@@ -58,6 +59,11 @@ class QueueRemoveRequested:
     episode: Episode
 
 
+@dataclass(frozen=True)
+class BluetoothDeviceSelected:
+    device: BluetoothDevice
+
+
 Event: TypeAlias = (
     HomeMenuSelected
     | FeedSelected
@@ -68,4 +74,5 @@ Event: TypeAlias = (
     | SkipRequested
     | QueueToggled
     | QueueRemoveRequested
+    | BluetoothDeviceSelected
 )

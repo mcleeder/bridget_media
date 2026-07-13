@@ -13,7 +13,7 @@
 #      hence --break-system-packages on Bookworm)
 #   4. Installs the Waveshare Touch e-Paper library (TP_lib) plus a
 #      waveshare_epd shim package matching our imports
-#   5. Installs /etc/mpd.conf (Bluetooth output, speaker MAC filled in later)
+#   5. Installs /etc/mpd.conf (Bluetooth + aux outputs; speaker MAC filled in later)
 #   6. Installs + enables the pi-media systemd service
 #
 # Manual step remaining afterwards: pair the Bluetooth speaker (instructions
@@ -41,8 +41,10 @@ sudo apt-get install -y \
 echo "=== [2/6] enable SPI + I2C ==="
 sudo raspi-config nonint do_spi 0
 sudo raspi-config nonint do_i2c 0
-# Hardware access for the app user
-sudo usermod -aG spi,i2c,gpio "$RUN_USER"
+# Hardware access for the app user. bluetooth is needed because
+# BluetoothController's `bluetoothctl connect` runs as this user, not root
+# (unlike configure-speaker, which runs via passwordless sudo).
+sudo usermod -aG spi,i2c,gpio,bluetooth "$RUN_USER"
 
 echo "=== [3/6] Python runtime deps ==="
 # Pillow comes from apt (python3-pil) — building it with pip on a Zero W takes
@@ -81,6 +83,21 @@ fi
 if ! sudo grep -q "bluealsa:DEV=..:" /etc/mpd.conf 2>/dev/null; then
     sudo cp "$APP_DIR/deploy/mpd.conf" /etc/mpd.conf
 fi
+# The guard above permanently blocks the full-file copy once a speaker MAC is
+# configured, so the aux output needs its own independent append to reach an
+# already-provisioned Pi.
+if ! sudo grep -q 'name        "Aux output"' /etc/mpd.conf; then
+    sudo tee -a /etc/mpd.conf > /dev/null <<'EOF'
+
+audio_output {
+    type        "alsa"
+    name        "Aux output"
+    device      "plughw:CARD=Headphones"
+    mixer_type  "software"
+}
+EOF
+    sudo systemctl restart mpd
+fi
 # bluez-alsa access for the mpd daemon user
 sudo usermod -aG bluetooth,audio mpd
 sudo systemctl enable mpd
@@ -111,7 +128,12 @@ cat <<EOF
 ============================================================
 Provisioning done. Two manual steps remain:
 
-1. Pair the Bluetooth speaker (put it in pairing mode first):
+1. Pair the Bluetooth speaker (put it in pairing mode first). From Windows:
+
+     bash deploy/pair_speaker.sh --scan
+     bash deploy/pair_speaker.sh AA:BB:CC:DD:EE:FF
+
+   Or directly on the Pi:
 
      bluetoothctl
        scan on              # wait for the speaker's MAC to appear

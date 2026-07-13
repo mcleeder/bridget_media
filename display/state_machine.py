@@ -32,6 +32,10 @@ def transition(state: AppState, event: Event, now_playing_origin: AppState) -> A
             return AppState.PODCAST_LIST
         case AppState.HOME, HomeMenuSelected(item=HomeMenuItem.QUEUE):
             return AppState.QUEUE
+        case AppState.HOME, HomeMenuSelected(item=HomeMenuItem.BLUETOOTH):
+            return AppState.BLUETOOTH
+        case AppState.BLUETOOTH, BackRequested():
+            return AppState.HOME
         case AppState.QUEUE, EpisodeSelected():
             return AppState.NOW_PLAYING
         case AppState.QUEUE, BackRequested():

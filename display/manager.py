@@ -9,9 +9,11 @@ from typing import Final
 from db.database import DatabaseError
 from db.models import Episode, Feed
 from db.queries import EpisodeRepository, FeedRepository, QueueRepository
+from display.bluetooth_control import BluetoothDevice, BluetoothService
 from display.drivers.base import DisplayDriver
 from display.events import (
     BackRequested,
+    BluetoothDeviceSelected,
     EpisodeSelected,
     Event,
     FeedSelected,
@@ -25,6 +27,7 @@ from display.events import (
 )
 from display.playback import AudioPlayer, PlaybackState
 from display.screens.base import Screen
+from display.screens.bluetooth_list import BluetoothScreen
 from display.screens.episode_list import EpisodeListScreen
 from display.screens.home import HomeScreen
 from display.screens.now_playing import NowPlayingScreen
@@ -73,12 +76,14 @@ class ScreenManager:
         episode_repository: EpisodeRepository,
         queue_repository: QueueRepository,
         player: AudioPlayer,
+        bluetooth: BluetoothService,
     ) -> None:
         self._driver = driver
         self._feed_repository = feed_repository
         self._episode_repository = episode_repository
         self._queue_repository = queue_repository
         self._player = player
+        self._bluetooth = bluetooth
 
         self._state: AppState = AppState.HOME
         self._selected_feed: Feed | None = None
@@ -98,6 +103,7 @@ class ScreenManager:
         self._episode_screen: EpisodeListScreen | None = None
         self._queue_screen: QueueListScreen | None = None
         self._now_playing_screen: NowPlayingScreen | None = None
+        self._bluetooth_screen: BluetoothScreen | None = None
 
         self._show(full_refresh=True)
 
@@ -125,7 +131,12 @@ class ScreenManager:
             self._show(full_refresh=True)
         elif isinstance(
             event,
-            ListScrolled | PlayPauseToggled | SkipRequested | QueueToggled | QueueRemoveRequested,
+            ListScrolled
+            | PlayPauseToggled
+            | SkipRequested
+            | QueueToggled
+            | QueueRemoveRequested
+            | BluetoothDeviceSelected,
         ):
             self._show(full_refresh=False)
 
@@ -178,6 +189,19 @@ class ScreenManager:
         match event:
             case HomeMenuSelected(item=HomeMenuItem.QUEUE):
                 self._queue_screen = QueueListScreen(self._queue_repository.get_entries())
+            case HomeMenuSelected(item=HomeMenuItem.BLUETOOTH):
+                self._rebuild_bluetooth_screen()
+            case BluetoothDeviceSelected(device) if not device.is_connected:
+                self._show_bluetooth_connecting(device)
+                self._bluetooth_command(
+                    lambda: self._bluetooth.activate_device(device.mac), "activate device"
+                )
+                self._rebuild_bluetooth_screen()
+            case BluetoothDeviceSelected(device):
+                self._bluetooth_command(
+                    lambda: self._bluetooth.disconnect_device(device.mac), "disconnect device"
+                )
+                self._rebuild_bluetooth_screen()
             case FeedSelected(feed):
                 self._selected_feed = feed
                 episodes = self._episode_repository.get_for_feed(feed.id)
@@ -385,6 +409,33 @@ class ScreenManager:
             # a playback failure must degrade to a log line, not kill the UI loop.
             logger.exception("Player command failed: %s", description)
 
+    def _bluetooth_command(self, command: Callable[[], None], description: str) -> None:
+        try:
+            command()
+        except Exception:
+            # Bluetooth exception types live above this layer (see layer hierarchy);
+            # a bluetooth failure must degrade to a log line, not kill the UI loop.
+            logger.exception("Bluetooth command failed: %s", description)
+
+    def _rebuild_bluetooth_screen(self) -> None:
+        """Re-query paired devices; a fetch failure shows as an on-screen error."""
+        scroll_offset = self._bluetooth_screen.scroll_offset if self._bluetooth_screen else 0
+        try:
+            devices = self._bluetooth.list_paired_devices()
+        except Exception:
+            # Bluetooth exception types live above this layer (see layer hierarchy).
+            logger.exception("Could not list paired Bluetooth devices")
+            devices = None
+        self._bluetooth_screen = BluetoothScreen(devices, scroll_offset)
+
+    def _show_bluetooth_connecting(self, device: BluetoothDevice) -> None:
+        """Flash a 'Connecting…' frame before the blocking activate_device call."""
+        scroll_offset = self._bluetooth_screen.scroll_offset if self._bluetooth_screen else 0
+        self._bluetooth_screen = BluetoothScreen(
+            None, scroll_offset, connecting_device_name=device.name
+        )
+        self._show(full_refresh=False)
+
     def _current_screen(self) -> Screen:
         match self._state:
             case AppState.HOME:
@@ -403,9 +454,10 @@ class ScreenManager:
                 if self._queue_screen is None:
                     raise DisplayError("QUEUE state reached without a queue screen")
                 return self._queue_screen
-            # Screen lands in Phase 6; until then no event leads here.
             case AppState.BLUETOOTH:
-                raise DisplayError("BLUETOOTH screen not implemented yet (Phase 6)")
+                if self._bluetooth_screen is None:
+                    raise DisplayError("BLUETOOTH state reached without a bluetooth screen")
+                return self._bluetooth_screen
 
     def _show(self, full_refresh: bool) -> None:
         image = self._current_screen().render()
