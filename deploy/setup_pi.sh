@@ -15,6 +15,7 @@
 #      waveshare_epd shim package matching our imports
 #   5. Installs /etc/mpd.conf (Bluetooth + aux outputs; speaker MAC filled in later)
 #   6. Installs + enables the pi-media systemd service
+#   7. Installs + enables the pi-media-feeds (web feed manager) systemd service
 #
 # Manual step remaining afterwards: pair the Bluetooth speaker (instructions
 # printed at the end).
@@ -53,7 +54,9 @@ echo "=== [3/6] Python runtime deps ==="
 sudo pip3 install --break-system-packages \
     "feedparser>=6.0" \
     "python-mpd2>=3.0" \
-    "APScheduler>=3.10,<4.0"
+    "APScheduler>=3.10,<4.0" \
+    "Flask>=3.0" \
+    "requests>=2.31"
 
 echo "=== [4/6] Waveshare Touch e-Paper library ==="
 WAVESHARE_DIR="/opt/Touch_e-Paper_HAT"
@@ -117,11 +120,17 @@ echo "MPD now outputs to $1. Test with:  mpc add <stream-url> && mpc play"
 EOF
 sudo chmod +x /usr/local/bin/configure-speaker
 
-echo "=== [6/6] pi-media service ==="
+echo "=== [6/7] pi-media service ==="
 sed "s|@USER@|$RUN_USER|; s|@APP_DIR@|$APP_DIR|" "$APP_DIR/deploy/pi-media.service" \
     | sudo tee /etc/systemd/system/pi-media.service > /dev/null
 sudo systemctl daemon-reload
 sudo systemctl enable pi-media
+
+echo "=== [7/7] pi-media-feeds (web feed manager) service ==="
+sed "s|@USER@|$RUN_USER|; s|@APP_DIR@|$APP_DIR|" "$APP_DIR/deploy/pi-media-feeds.service" \
+    | sudo tee /etc/systemd/system/pi-media-feeds.service > /dev/null
+sudo systemctl daemon-reload
+sudo systemctl enable pi-media-feeds
 
 cat <<EOF
 
@@ -152,5 +161,7 @@ Provisioning done. Two manual steps remain:
 After reboot:
   - hardware smoke test:   cd $APP_DIR && python3 test_display.py
   - app logs:              journalctl -u pi-media -f
+  - feed manager:          http://$(hostname).local:8000
+  - feed manager logs:     journalctl -u pi-media-feeds -f
 ============================================================
 EOF

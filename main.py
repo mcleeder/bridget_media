@@ -13,7 +13,7 @@ from bluetooth import BluetoothController
 from db import Database, EpisodeRepository, FeedRepository, QueueRepository
 from display.drivers.base import DisplayDriver
 from display.manager import ScreenManager
-from feeds import FeedFetcher
+from feeds import FeedFetcher, seed_default_feeds
 from player import PlayerController, PlayerError
 
 logging.basicConfig(
@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 _POLL_INTERVAL_SEC: float = 0.1   # touch poll rate
 _NOW_PLAYING_REFRESH_SEC: float = 5.0  # how often to redraw now-playing progress
+_FEED_POLL_INTERVAL_SEC: float = 60.0  # how often to check for feeds added via the web app
 
 
 def _build_driver(simulate: bool) -> DisplayDriver:
@@ -46,6 +47,8 @@ def main(simulate: bool) -> None:
         episode_repo = EpisodeRepository(db)
         queue_repo = QueueRepository(db)
         fetcher = FeedFetcher(FeedRepository(fetcher_db), EpisodeRepository(fetcher_db))
+
+        seed_default_feeds(feed_repo)
 
         # The UI comes up from the database immediately; the first fetch (minutes
         # on the Pi) runs in the scheduler thread and the main loop reloads the
@@ -89,6 +92,8 @@ def main(simulate: bool) -> None:
         )
 
         last_refresh = time.monotonic()
+        last_feed_poll = time.monotonic()
+        known_feed_ids = {feed.id for feed in feed_repo.get_all()}
 
         try:
             while True:
@@ -103,6 +108,16 @@ def main(simulate: bool) -> None:
                 if now - last_refresh >= _NOW_PLAYING_REFRESH_SEC:
                     manager.refresh_playback()
                     last_refresh = now
+
+                # Feeds can also be added/removed via the feed-manager web app
+                # (a separate process) — pick those changes up without waiting
+                # for the next scheduled fetch cycle.
+                if now - last_feed_poll >= _FEED_POLL_INTERVAL_SEC:
+                    current_feed_ids = {feed.id for feed in feed_repo.get_all()}
+                    if current_feed_ids != known_feed_ids:
+                        known_feed_ids = current_feed_ids
+                        manager.reload_feeds()
+                    last_feed_poll = now
 
                 time.sleep(_POLL_INTERVAL_SEC)
 

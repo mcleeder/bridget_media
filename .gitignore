@@ -12,3 +12,7 @@ pi_media.db*
 
 # Editor / tooling
 .claude/
+
+# Frontend build artifacts (feed_manager)
+feed_manager/frontend/node_modules/
+feed_manager/frontend/dist/

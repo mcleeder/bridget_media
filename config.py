@@ -14,6 +14,8 @@ DB_PATH: Final[str] = "pi_media.db"
 
 FEED_REFRESH_INTERVAL_HOURS: Final[int] = 4
 
+FEED_MANAGER_PORT: Final[int] = 8000
+
 
 @dataclass(frozen=True)
 class FeedConfig:

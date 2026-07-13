@@ -1,0 +1,20 @@
+# systemd unit for the Pi Media feed-manager web app (Flask + Svelte).
+# @USER@ and @APP_DIR@ are filled in by setup_pi.sh.
+
+[Unit]
+Description=Pi Media feed manager (web UI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+# DB_PATH in config.py is relative, so the working directory determines
+# where pi_media.db lives — same as pi-media.service, same database file.
+WorkingDirectory=@APP_DIR@
+ExecStart=/usr/bin/python3 -m feed_manager.app
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

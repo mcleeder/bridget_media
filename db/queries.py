@@ -68,6 +68,21 @@ class FeedRepository:
         except sqlite3.Error as exc:
             raise DatabaseError(f"Failed to update last_fetched for feed {feed_id}") from exc
 
+    def delete(self, feed_id: int) -> None:
+        # No ON DELETE CASCADE is declared on episodes/queue, and foreign_keys
+        # is ON, so referencing rows must be removed explicitly first.
+        try:
+            self._db.connection.execute(
+                "DELETE FROM queue WHERE episode_id IN"
+                " (SELECT id FROM episodes WHERE feed_id = ?)",
+                (feed_id,),
+            )
+            self._db.connection.execute("DELETE FROM episodes WHERE feed_id = ?", (feed_id,))
+            self._db.connection.execute("DELETE FROM feeds WHERE id = ?", (feed_id,))
+            self._db.connection.commit()
+        except sqlite3.Error as exc:
+            raise DatabaseError(f"Failed to delete feed {feed_id}") from exc
+
 
 class EpisodeRepository:
     def __init__(self, db: Database) -> None:

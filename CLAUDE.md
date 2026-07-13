@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-A podcast player running on a Raspberry Pi with a Waveshare 2.9" e-ink touch display. Streams audio via MPD to a Bluetooth speaker. No local audio storage — pure streaming. RSS feeds are hardcoded for now; a feed management system comes later.
+A podcast player running on a Raspberry Pi with a Waveshare 2.9" e-ink touch display. Streams audio via MPD to a Bluetooth speaker. No local audio storage — pure streaming. Feeds are managed via a small companion web app (`feed_manager/`) rather than the e-ink screen itself, which is too small/keyboard-less for search-and-add.
 
 ## Hardware
 
@@ -23,26 +23,30 @@ A podcast player running on a Raspberry Pi with a Waveshare 2.9" e-ink touch dis
 | Image rendering | `Pillow` (PIL) |
 | Scheduling | `APScheduler` (background feed refresh) |
 | Local dev simulator | `tkinter` (stdlib) |
+| Feed manager backend | `Flask` + `requests` (iTunes Search API) |
+| Feed manager frontend | Svelte + TypeScript, built with Vite |
 
 ## Architecture
 
 ### Layers
 
 ```
-config.py          ← hardcoded RSS feeds, app settings
+config.py          ← default seed feeds, app settings
 db/                ← SQLite schema and queries
-feeds/             ← RSS fetch + parse → store episodes
+feeds/             ← RSS fetch + parse → store episodes; iTunes search; default-feed seeding
 player/            ← python-mpd2 wrapper, playback state
 display/           ← e-ink driver, touch input, screen rendering
 main.py            ← app entry point, event loop
+feed_manager/      ← second entry point: Flask + Svelte web UI for managing feeds
 ```
 
 ### Data Flow
 
-1. `feeds/fetcher.py` polls RSS feeds on startup + every N hours, writes episodes to DB
+1. `feeds/fetcher.py` fetches feeds read from the DB (`FeedRepository.get_all()`) on startup + every N hours, writes episodes to DB
 2. `player/controller.py` wraps MPD: stream URL, play/pause/stop/seek
 3. `display/` renders a PIL image → pushes to e-ink; touch events → UI events → state machine
-4. `main.py` wires it all together and runs the poll loop: touch → `ScreenManager.handle_touch` → display update
+4. `main.py` wires it all together and runs the poll loop: touch → `ScreenManager.handle_touch` → display update; also polls the `feeds` table every ~60s so feeds added/removed via `feed_manager/` (a separate process) show up on screen
+5. `feed_manager/app.py` is a second, independent entry point — a small Flask API + a built Svelte UI — that lets you search the iTunes podcast directory and add/remove feeds from a phone/laptop on the LAN, writing to the same `pi_media.db`
 
 ### UI State Machine
 
@@ -183,23 +187,26 @@ pi_media/
 ├── requirements-dev.txt       # + mypy/ruff (local only)
 ├── pyproject.toml             # ruff + mypy config
 ├── main.py                    # entry point, DI wiring, poll loop
-├── config.py                  # hardcoded FeedConfig list, settings
+├── config.py                  # default seed FeedConfig list, settings
 ├── test_display.py            # Pi-only hardware smoke test
 ├── deploy/
-│   ├── deploy.sh              # Windows → Pi code sync + service restart
+│   ├── deploy.sh              # Windows → Pi code sync + service restart (both services)
 │   ├── setup_ssh_key.sh       # one-time passwordless SSH setup
 │   ├── setup_pi.sh            # on-Pi provisioning (run once per flash)
 │   ├── pair_speaker.sh        # Windows → SSH: scan/pair/trust/connect + configure-speaker
-│   ├── pi-media.service       # systemd unit template
+│   ├── pi-media.service       # systemd unit template (player app)
+│   ├── pi-media-feeds.service # systemd unit template (feed manager web app)
 │   └── mpd.conf               # MPD config template (bluez-alsa + aux outputs, ffmpeg mp3 decoding)
 ├── db/
 │   ├── __init__.py
 │   ├── database.py            # connection, schema init, DatabaseError
 │   ├── models.py              # Feed, Episode (frozen dataclasses)
-│   └── queries.py             # FeedRepository, EpisodeRepository
+│   └── queries.py             # FeedRepository (incl. delete), EpisodeRepository
 ├── feeds/
 │   ├── __init__.py
-│   └── fetcher.py             # feedparser → DB
+│   ├── fetcher.py             # feedparser → DB, sourced from FeedRepository.get_all()
+│   ├── seed.py                # seed_default_feeds() — one-time, only if feeds table is empty
+│   └── itunes_search.py       # ItunesSearchClient — iTunes Search API proxy
 ├── player/
 │   ├── __init__.py
 │   └── controller.py          # python-mpd2 wrapper, PlaybackState
@@ -229,8 +236,16 @@ pi_media/
 │       ├── queue_list.py
 │       ├── now_playing.py
 │       └── bluetooth_list.py
-└── assets/
-    └── fonts/                 # DejaVuSans.ttf, MaterialIcons-Regular.ttf (+ .codepoints)
+├── assets/
+│   └── fonts/                 # DejaVuSans.ttf, MaterialIcons-Regular.ttf (+ .codepoints)
+└── feed_manager/               # second entry point: web UI for managing feeds
+    ├── __init__.py
+    ├── app.py                  # Flask factory + entrypoint; per-request Database via flask.g
+    ├── routes.py                # Blueprint: /api/feeds (GET/POST/DELETE), /api/search
+    └── frontend/                 # Svelte + TS + Vite app; built to frontend/dist/, served by Flask
+        └── src/
+            ├── App.svelte
+            └── lib/               # api.ts, types.ts, FeedList/SearchPanel/SearchResultCard.svelte
 ```
 
 ## Environment Setup
@@ -245,9 +260,12 @@ pi_media/
 conda create -n pi_media python=3.11
 conda activate pi_media
 pip install -r requirements-dev.txt   # runtime deps + mypy/ruff
+
+# Feed manager frontend (one-time; Node/npm never runs on the Pi)
+cd feed_manager/frontend && npm install
 ```
 
-On the Pi, dependencies are installed by `deploy/setup_pi.sh` (see Deployment). `requirements.txt` is runtime-only and stays the source of truth — keep the pip list in `setup_pi.sh` in sync with it.
+On the Pi, dependencies are installed by `deploy/setup_pi.sh` (see Deployment). `requirements.txt` is runtime-only and stays the source of truth — keep the pip list in `setup_pi.sh` in sync with it. `deploy/deploy.sh` builds the frontend locally before every sync, so the Pi only ever receives the built `frontend/dist/` static output.
 
 ## Deployment
 
@@ -334,7 +352,7 @@ feeds / player / bluetooth (know db, know config — bluetooth needs neither, it
     ↓
 display                  (knows feeds/player/bluetooth through injected interfaces, never imports them directly)
     ↓
-main                      (imports everything, wires the graph, runs the loop)
+main / feed_manager       (two independent entry points; feed_manager knows only db + feeds, not display/player/bluetooth)
 ```
 
 A layer must never import from the layer above it. If you feel the urge to do so, the logic belongs in a different layer.
@@ -465,16 +483,28 @@ python -m mypy --strict . --exclude test_display.py
 
 **Pi verification (2026-07-13)** — `deploy/deploy.sh` + a re-run of `setup_pi.sh` (idempotent) confirmed: `mike_pi` gained the `bluetooth` group, the aux `audio_output` block landed in `/etc/mpd.conf`, and `pi-media`/`mpd` both stayed healthy through the re-provision. `BluetoothController` exercised directly over SSH against the real `bluetoothctl` and the already-paired EarFun UBOOM L: `list_paired_devices()` correctly reported it connected, `disconnect_device()` flipped it to disconnected, and `activate_device()` (connect + `configure-speaker`, which restarts MPD) reconnected it — `PlayerController` healed from the MPD restart with no errors in `journalctl`. Interactive pairing via `pair_speaker.sh` wasn't exercised since the speaker was already paired+trusted; that path remains to be run the next time a new device is paired.
 
+### Phase 7 — Feed Manager Web App ✅ COMPLETE (2026-07-13 — simulator-verified; confirm on Pi)
+- [x] **Architectural fix**: `FeedFetcher.fetch_all()` used to iterate `config.FEEDS` directly and re-`upsert` it every cycle, so the `feeds` DB table was just a mirror of the hardcoded list and nothing ever removed a row. Now `fetch_all()` loops `FeedRepository.get_all()` (DB is the source of truth); `feeds/seed.py`'s `seed_default_feeds()` inserts `config.FEEDS` only once, on first boot (early-returns if the table is non-empty) — compatible with the documented "wipe `pi_media.db*` freely" dev workflow, since a wipe re-seeds automatically. Deleting a feed via the web app is now permanent.
+- [x] `feeds/fetcher.py`: private `_fetch_one(FeedConfig)` became public `fetch_one(name, url) -> Feed`, called by both `fetch_all()` and the web app's add-feed endpoint (immediate episode population instead of waiting up to `FEED_REFRESH_INTERVAL_HOURS`)
+- [x] `db/queries.py`: `FeedRepository.delete(feed_id)` — cascades to `queue` then `episodes` in one transaction, since `episodes`/`queue` have no `ON DELETE CASCADE` and `PRAGMA foreign_keys = ON` is set
+- [x] `feeds/itunes_search.py`: `ItunesSearchClient` — no-auth proxy to `itunes.apple.com/search`, `ItunesSearchError`, frozen `PodcastSearchResult` (name, artist_name, feed_url, artwork_url)
+- [x] `feed_manager/` — a second, independent entry point (not a new layer; composes `db`/`feeds` exactly like `main.py`, no `display`/`player`/`bluetooth`). `app.py`: `create_app()` factory, serves the built Svelte `frontend/dist/` as static files (`static_url_path=""`, no SPA router needed — single page), opens one `Database(config.DB_PATH)` per request via `flask.g` (`before_request`/`teardown_request`) so no connection crosses Flask's request-handling threads. `routes.py`: Blueprint with `GET/POST /api/feeds`, `DELETE /api/feeds/<id>`, `GET /api/search`. Runs single-threaded (`threaded=False`) — a deliberate simplicity call for a single-user, LAN-only tool rather than adding a WSGI server dependency
+- [x] **Cross-process DB safety**: Flask is a separate *process* from `pi-media`, not a thread — architecturally identical to the existing UI-thread/fetcher-thread split, just at the process level (if anything safer, since no Python object crosses a thread boundary). WAL + `busy_timeout=5000` + `isolation_level="IMMEDIATE"` (the same fix from the Phase 4 queue-crash incident) already handle two independent connections writing to the same file
+- [x] `main.py`: calls `seed_default_feeds(feed_repo)` once at startup; the poll loop gets a `_FEED_POLL_INTERVAL_SEC` (60s) check comparing the feed-id set against a cached copy, calling the existing `ScreenManager.reload_feeds()` on a change — this is how feeds added via the web app (a separate process with no shared in-memory state) reach the e-ink screen without a restart
+- [x] Frontend: Vite + Svelte 5 + TypeScript, no client-side router (single page: search panel + current-feeds list), no ESLint/Prettier setup yet. `vite.config.ts` proxies `/api` to the Flask backend in dev (`VITE_API_TARGET`, default `http://localhost:8000`); production serves everything from Flask, so **no Node/npm dependency on the Pi** — the frontend is built once locally (`npm install` one-time, then `npm run build`, or automatically via `deploy/deploy.sh`) and only `frontend/dist/` is deployed
+- [x] `deploy/pi-media-feeds.service` mirrors `pi-media.service` (`@USER@`/`@APP_DIR@` substitution, `ExecStart=/usr/bin/python3 -m feed_manager.app`, no MPD dependency); `setup_pi.sh` installs `Flask`/`requests` and enables the new service (step 7); `deploy.sh` builds the frontend before syncing and restarts both services (each guarded independently, since either may not be installed yet on a first deploy)
+- Verified end-to-end in the simulator: ran `main.py --simulate` and `feed_manager/app.py` concurrently against the same dev DB, added a feed through the real Flask API (iTunes search proxy confirmed against the live API separately), and confirmed `main.py`'s new poll loop picked up the change and called `reload_feeds()` (`3 feeds` → `4 feeds` in the log) within the 60s window with zero shared in-memory state between the two processes; delete/cascade returned `204`. `ruff` + `mypy --strict` clean; `npm run check` (svelte-check + tsc) and `npm run build` clean.
+
 
 ## Key Notes
 
-- **One sqlite3 connection per thread, always.** The UI thread and the fetcher thread each get their own `Database` instance (wired in `main.py`); sharing a connection across threads corrupts it and crashes the process with `SystemError`. WAL + busy timeout + IMMEDIATE transactions (set in `db/database.py`) make the two connections coexist. If a new thread ever needs the DB, give it its own `Database`.
+- **One sqlite3 connection per thread, always.** The UI thread and the fetcher thread each get their own `Database` instance (wired in `main.py`); sharing a connection across threads corrupts it and crashes the process with `SystemError`. WAL + busy timeout + IMMEDIATE transactions (set in `db/database.py`) make the two connections coexist. If a new thread ever needs the DB, give it its own `Database`. `feed_manager/` (a separate process) follows the same rule per-request via `flask.g` — see Phase 7.
 - MPD is installed/configured by `deploy/setup_pi.sh` (plus the manual speaker pairing step). Use `python-mpd2` to connect on `localhost:6600`. If MPD is unreachable at startup, `main.py` logs and continues — the UI still comes up.
 - MPD drops idle client connections after 60s (`connection_timeout` default) and restarts when `configure-speaker` runs — `PlayerController._execute()` therefore reconnects once and retries on connection loss. Without it, browsing lists for over a minute killed all playback commands ("MPD unreachable") until an app restart.
 - Podcast audio URLs sit behind ad/tracking redirect chains that can exceed MPD's hard limit of 5 (Radiolab's is 6+), and MPD fails *asynchronously* — `play` is accepted, the decode error lands a second later and MPD ends up **stopped**. `PlayerController` therefore (a) resolves redirects app-side before queueing (`_resolve_stream_url`: plain GET, body unread, player-style User-Agent — some trackers 403 Python's default, and a `Range` header must NOT be sent because WNYC's CDN bakes it into the signed URL as `x-access-range`, killing seeks), and (b) `resume()` issues `play` when MPD is stopped, since `pause(0)` is a silent no-op there.
 - ±30s skip needs ffmpeg as the mp3 decoder: MPD's default (`mad`) can't seek ad-stitched streams ("Decoder failed to seek" on WNYC/Radiolab), so `deploy/mpd.conf` disables `mad` and `mpg123`. If skips break again after an MPD reinstall, check those decoder blocks survived in `/etc/mpd.conf`.
 - Waveshare provides Python demo code on their wiki — use it as the display/touch driver base, don't rewrite from scratch.
-- RSS feeds are hardcoded in `config.py` as `FeedConfig` frozen dataclasses (currently Radiolab, Dear Hank and John, The Universe (Crash Course Pods) — 3 feeds, one per visible row, so scrolling isn't exercisable on the podcast list without adding a 4th).
+- `config.FEEDS` (currently Radiolab, Dear Hank and John, The Universe (Crash Course Pods)) is only a one-time seed for a fresh DB now — add/remove feeds via `feed_manager/` (see Phase 7), not by editing `config.py`. With the 3 defaults, scrolling isn't exercisable on the podcast list without adding a 4th.
 - No audio files stored locally — playback always streams from `episode.audio_url`.
 - Partial refresh is used for all in-screen updates (scroll, play/pause toggle, skip, periodic progress redraw) *and* for most screen transitions; a real full refresh (the multi-flash one) only runs every `_TRANSITIONS_BETWEEN_FULL_REFRESHES`th transition to wipe accumulated ghosting. If ghosting looks bad on the panel, lower that constant in `display/manager.py`.
 - All UI development happens locally with `--simulate`. MPD integration is tested on the Pi only. On Windows every player command raises inside `ScreenManager._player_command` and becomes a log line — that's the expected simulator behavior, not a bug.

@@ -10,6 +10,10 @@
 # Uses tar-over-ssh (rsync isn't available on stock Git Bash). Note: files
 # deleted locally are NOT removed on the Pi; wipe ~/pi_media there if layout
 # changes drastically.
+#
+# One-time local setup for the feed manager frontend (Node/npm never runs on
+# the Pi — only the built static output is deployed):
+#   cd feed_manager/frontend && npm install
 
 set -euo pipefail
 
@@ -31,6 +35,9 @@ if [[ -z "$PI_USERNAME" || -z "$PI_NETWORK_NAME" ]]; then
     exit 1
 fi
 
+echo "Building feed manager frontend..."
+npm --prefix "$ROOT/feed_manager/frontend" run build
+
 echo "Deploying to ${TARGET}:~/${APP_DIR} ..."
 
 tar -C "$ROOT" -czf - \
@@ -42,18 +49,25 @@ tar -C "$ROOT" -czf - \
     --exclude='.ruff_cache' \
     --exclude='.claude' \
     --exclude='pi_media.db*' \
+    --exclude='feed_manager/frontend/node_modules' \
     . | ssh "$TARGET" "mkdir -p ~/${APP_DIR} && tar -xzf - -C ~/${APP_DIR}"
 
 echo "Code synced."
 
-# Restart the app only if the service has been installed (first deploy happens
-# before setup_pi.sh has run, so the service may not exist yet).
+# Restart each app only if its service has been installed (first deploy
+# happens before setup_pi.sh has run, so neither service may exist yet).
 ssh "$TARGET" '
     if systemctl list-unit-files pi-media.service --no-legend 2>/dev/null | grep -q pi-media; then
         sudo systemctl restart pi-media
         echo "pi-media service restarted."
     else
         echo "pi-media service not installed yet — run: bash ~/pi_media/deploy/setup_pi.sh"
+    fi
+    if systemctl list-unit-files pi-media-feeds.service --no-legend 2>/dev/null | grep -q pi-media-feeds; then
+        sudo systemctl restart pi-media-feeds
+        echo "pi-media-feeds service restarted."
+    else
+        echo "pi-media-feeds service not installed yet — run: bash ~/pi_media/deploy/setup_pi.sh"
     fi
 '
 
