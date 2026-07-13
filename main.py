@@ -36,11 +36,15 @@ def _build_driver(simulate: bool) -> DisplayDriver:
 def main(simulate: bool) -> None:
     logger.info("Starting Pi Media (simulate=%s)", simulate)
 
-    with Database(config.DB_PATH) as db:
+    # Two connections on purpose: the fetcher writes from the scheduler thread,
+    # and sharing one sqlite3 connection across threads corrupts it (hard
+    # SystemError crash). Each connection stays single-threaded; WAL + busy
+    # timeout (set in Database) let them interleave on the same file.
+    with Database(config.DB_PATH) as db, Database(config.DB_PATH) as fetcher_db:
         feed_repo = FeedRepository(db)
         episode_repo = EpisodeRepository(db)
         queue_repo = QueueRepository(db)
-        fetcher = FeedFetcher(feed_repo, episode_repo)
+        fetcher = FeedFetcher(FeedRepository(fetcher_db), EpisodeRepository(fetcher_db))
 
         # The UI comes up from the database immediately; the first fetch (minutes
         # on the Pi) runs in the scheduler thread and the main loop reloads the

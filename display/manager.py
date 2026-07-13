@@ -41,6 +41,12 @@ _PLAYED_FRACTION_THRESHOLD: Final[float] = 0.9
 # a compromise between resume accuracy and SD-card write wear.
 _POSITION_PERSIST_INTERVAL_SEC: Final[float] = 30.0
 
+# One physical tap can arrive as two touch events: capacitive jitter moves
+# the coordinate a pixel or two, defeating the driver's held-finger filter.
+# For toggle actions a double-fire silently undoes itself, so taps inside
+# this window are ignored (e-ink can't visibly respond faster anyway).
+_TOUCH_DEBOUNCE_SEC: Final[float] = 0.3
+
 # Screen transitions normally use flash-free partial refresh; every Nth
 # transition gets a real full refresh to clear accumulated e-ink ghosting
 # (the same page-flash cadence e-readers use).
@@ -80,6 +86,7 @@ class ScreenManager:
         # Where Back from Now Playing returns to — see transition()
         self._now_playing_origin: AppState = AppState.EPISODE_LIST
         self._last_position_persist: float = 0.0
+        self._last_touch_time: float = 0.0
         # Start at the threshold so the very first frame is a full refresh,
         # giving later partial refreshes a base frame to diff against.
         self._transitions_since_full_refresh: int = _TRANSITIONS_BETWEEN_FULL_REFRESHES
@@ -92,6 +99,11 @@ class ScreenManager:
         self._show(full_refresh=True)
 
     def handle_touch(self, x: int, y: int) -> None:
+        now = time.monotonic()
+        if now - self._last_touch_time < _TOUCH_DEBOUNCE_SEC:
+            return
+        self._last_touch_time = now
+
         event = self._current_screen().handle_touch(x, y)
         if event is None:
             return
@@ -160,14 +172,9 @@ class ScreenManager:
                 else:
                     self._rebuild_episode_screen()
             case QueueToggled(episode):
-                if episode.id in self._queue_repository.queued_episode_ids():
-                    self._queue_repository.remove(episode.id)
-                else:
-                    self._queue_repository.add(episode.id)
-                self._rebuild_episode_screen()
+                self._queue_command(lambda: self._toggle_queued(episode), "toggle queue")
             case QueueRemoveRequested(episode):
-                self._queue_repository.remove(episode.id)
-                self._rebuild_queue_screen()
+                self._queue_command(lambda: self._remove_queued(episode), "remove from queue")
             case PlayPauseToggled():
                 self._toggle_play_pause()
             case SkipRequested(seconds) if seconds >= 0:
@@ -238,6 +245,25 @@ class ScreenManager:
                 "resume from saved position",
             )
         self._last_position_persist = time.monotonic()
+
+    def _toggle_queued(self, episode: Episode) -> None:
+        if episode.id in self._queue_repository.queued_episode_ids():
+            self._queue_repository.remove(episode.id)
+        else:
+            self._queue_repository.add(episode.id)
+        self._rebuild_episode_screen()
+
+    def _remove_queued(self, episode: Episode) -> None:
+        self._queue_repository.remove(episode.id)
+        self._rebuild_queue_screen()
+
+    def _queue_command(self, command: Callable[[], None], description: str) -> None:
+        try:
+            command()
+        except DatabaseError:
+            # A transient DB failure must degrade to a log line, not kill the
+            # UI loop — the list simply redraws with its previous contents.
+            logger.exception("Queue update failed: %s", description)
 
     def _rebuild_episode_screen(self) -> None:
         """Re-query the selected feed so played markers and new episodes are current."""

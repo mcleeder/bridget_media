@@ -8,7 +8,7 @@ __pycache__/
 .ruff_cache/
 
 # Local database (created at runtime)
-pi_media.db
+pi_media.db*
 
 # Editor / tooling
 .claude/

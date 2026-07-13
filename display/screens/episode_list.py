@@ -81,7 +81,7 @@ class EpisodeListScreen:
             is_queued = episode.id in self._queued_episode_ids
             renderer.draw_icon_centered(
                 draw,
-                renderer.ICON_CHECK if is_queued else renderer.ICON_PLAYLIST_ADD,
+                renderer.ICON_PLAYLIST_ADD_CHECK if is_queued else renderer.ICON_PLAYLIST_ADD,
                 (layout.ACTION_X, y, layout.SIDEBAR_X, y + layout.ROW_HEIGHT),
                 action_font,
             )

@@ -28,7 +28,7 @@ ICON_PODCASTS: Final[str] = "\uf048"
 ICON_QUEUE_MUSIC: Final[str] = "\ue03d"
 ICON_CHEVRON_RIGHT: Final[str] = "\ue5cc"
 ICON_PLAYLIST_ADD: Final[str] = "\ue03b"
-ICON_CHECK: Final[str] = "\ue5ca"
+ICON_PLAYLIST_ADD_CHECK: Final[str] = "\ue065"
 ICON_REMOVE_CIRCLE_OUTLINE: Final[str] = "\ue15d"
 
 

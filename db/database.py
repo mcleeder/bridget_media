@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Final
 
 
 class DatabaseError(Exception):
     pass
+
+
+_BUSY_TIMEOUT_MS: Final[int] = 5000
 
 
 _SCHEMA = """
@@ -43,9 +47,18 @@ class Database:
                 str(path),
                 check_same_thread=False,
                 detect_types=sqlite3.PARSE_DECLTYPES,
+                # IMMEDIATE takes the write lock at BEGIN, so a write that
+                # collides with the other connection waits out the busy
+                # timeout instead of failing instantly with BUSY_SNAPSHOT.
+                isolation_level="IMMEDIATE",
             )
             self._conn.row_factory = sqlite3.Row
             self._conn.execute("PRAGMA foreign_keys = ON")
+            # The UI and the feed fetcher use separate connections; WAL lets
+            # them interleave without "database is locked" errors, and the
+            # busy timeout covers the brief write-write collisions.
+            self._conn.execute("PRAGMA journal_mode = WAL")
+            self._conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
             self._init_schema()
         except sqlite3.Error as exc:
             raise DatabaseError(f"Failed to open database at {path}") from exc

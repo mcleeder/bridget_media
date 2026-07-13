@@ -426,12 +426,18 @@ python -m mypy --strict . --exclude test_display.py
 ### Phase 4 — Episode Queue ✅ COMPLETE (2026-07-12)
 - [x] `queue` table appended to `_SCHEMA` (`CREATE TABLE IF NOT EXISTS` runs every boot — new tables need no migration): `id INTEGER PK AUTOINCREMENT, episode_id INTEGER NOT NULL UNIQUE REFERENCES episodes(id), added_at TEXT NOT NULL`
 - [x] `QueueEntry(id, episode, feed_name, added_at)` frozen dataclass; `QueueRepository`: `add` (INSERT OR IGNORE), `remove`, `get_entries` (JOIN episodes+feeds, ORDER BY q.id — FIFO, no position column), `first_entry`, `queued_episode_ids`; plus `FeedRepository.get_by_id`
-- [x] Episode list + button: `ACTION_X = SIDEBAR_X - 36` zone in `list_layout.py`; toggles queue membership via `QueueToggled(episode)` (`ICON_PLAYLIST_ADD e03b` ↔ `ICON_CHECK e5ca`); titles clip at `ACTION_X - 12`
+- [x] Episode list + button: `ACTION_X = SIDEBAR_X - 36` zone in `list_layout.py`; toggles queue membership via `QueueToggled(episode)` (`ICON_PLAYLIST_ADD e03b` ↔ `ICON_PLAYLIST_ADD_CHECK e065`); titles clip at `ACTION_X - 12`
 - [x] `QueueListScreen` (`display/screens/queue_list.py`): title + feed-name rows, `ICON_REMOVE_CIRCLE_OUTLINE e15d` in action zone → `QueueRemoveRequested`, row tap → `EpisodeSelected`, header "Next" with back icon
 - [x] Manager: `queue_repository` dep; extracted `_start_episode(episode)` (feed name via `get_by_id`, not `_selected_feed` — queue playback has no selected feed); Back-from-NOW_PLAYING rebuilds episode **or** queue screen per `_now_playing_origin`; `QueueToggled | QueueRemoveRequested` join the partial-refresh event tuple
 - [x] Queue entries are removed on natural finish, not on start (restart mid-episode keeps the entry) — removal side is Phase 5's auto-advance; today entries persist until removed by hand
 - [x] Verify-skill coords: action zone at (240, 40)/(240, 75)/(240, 110)
 - Verified via scripted-touch harness (18 checks: toggle on/off, FIFO order, feed-name join, remove, play-from-queue with correct URL, origin-aware Back both ways) + simulator smoke run; ruff + `mypy --strict` clean
+
+**Queue hardening (2026-07-13)** — fixed an intermittent hard crash when tapping + during an active feed fetch. Root cause: one shared `sqlite3.Connection` used by both the UI thread and the APScheduler fetch thread — concurrent statements corrupt the connection and raise `SystemError` (not a `sqlite3.Error`, so repository handlers never catch it). Fixes, all verified by a scripted concurrent-writer harness that reproduced the original crash:
+- `main.py` opens a **second `Database`** for the fetcher; each connection stays single-threaded (see Key Notes)
+- `Database` sets `journal_mode=WAL`, `busy_timeout=5000`, and `isolation_level="IMMEDIATE"` — IMMEDIATE takes the write lock at BEGIN so a colliding write waits out the timeout instead of failing instantly with `BUSY_SNAPSHOT` (without it, most UI writes during a fetch burst still failed "database is locked")
+- Queue side effects in the manager go through `_queue_command` (mirrors `_player_command`): a residual `DatabaseError` degrades to a log line, not a UI crash
+- `ScreenManager.handle_touch` debounces: taps within `_TOUCH_DEBOUNCE_SEC` (300ms) of the last are ignored. Capacitive jitter can emit one physical tap as two events (the driver's held-finger filter only matches exact coordinates), and a double-fire on a toggle silently undoes it
 
 ### Phase 5 — Auto-Advance (simulator-shippable; confirm on Pi)
 - [ ] `PlaybackState.is_stopped` (MPD `state == "stop"`) in `player/controller.py` + the `display/playback.py` Protocol
@@ -452,6 +458,7 @@ python -m mypy --strict . --exclude test_display.py
 
 ## Key Notes
 
+- **One sqlite3 connection per thread, always.** The UI thread and the fetcher thread each get their own `Database` instance (wired in `main.py`); sharing a connection across threads corrupts it and crashes the process with `SystemError`. WAL + busy timeout + IMMEDIATE transactions (set in `db/database.py`) make the two connections coexist. If a new thread ever needs the DB, give it its own `Database`.
 - MPD is installed/configured by `deploy/setup_pi.sh` (plus the manual speaker pairing step). Use `python-mpd2` to connect on `localhost:6600`. If MPD is unreachable at startup, `main.py` logs and continues — the UI still comes up.
 - MPD drops idle client connections after 60s (`connection_timeout` default) and restarts when `configure-speaker` runs — `PlayerController._execute()` therefore reconnects once and retries on connection loss. Without it, browsing lists for over a minute killed all playback commands ("MPD unreachable") until an app restart.
 - Podcast audio URLs sit behind ad/tracking redirect chains that can exceed MPD's hard limit of 5 (Radiolab's is 6+), and MPD fails *asynchronously* — `play` is accepted, the decode error lands a second later and MPD ends up **stopped**. `PlayerController` therefore (a) resolves redirects app-side before queueing (`_resolve_stream_url`: plain GET, body unread, player-style User-Agent — some trackers 403 Python's default, and a `Range` header must NOT be sent because WNYC's CDN bakes it into the signed URL as `x-access-range`, killing seeks), and (b) `resume()` issues `play` when MPD is stopped, since `pause(0)` is a silent no-op there.

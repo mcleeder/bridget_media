@@ -41,7 +41,7 @@ tar -C "$ROOT" -czf - \
     --exclude='.mypy_cache' \
     --exclude='.ruff_cache' \
     --exclude='.claude' \
-    --exclude='pi_media.db' \
+    --exclude='pi_media.db*' \
     . | ssh "$TARGET" "mkdir -p ~/${APP_DIR} && tar -xzf - -C ~/${APP_DIR}"
 
 echo "Code synced."
