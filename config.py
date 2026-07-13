@@ -23,19 +23,15 @@ class FeedConfig:
 
 FEEDS: Final[list[FeedConfig]] = [
     FeedConfig(
-        name="Darknet Diaries",
-        url="https://feeds.megaphone.fm/darknetdiaries",
-    ),
-    FeedConfig(
-        name="99% Invisible",
-        url="https://feeds.simplecast.com/BqbsxVfO",
-    ),
-    FeedConfig(
         name="Radiolab",
         url="https://feeds.simplecast.com/EmVW7VGp",
     ),
     FeedConfig(
-        name="The Changelog",
-        url="https://changelog.com/podcast/feed",
+        name="Dear Hank and John",
+        url="https://rss.art19.com/dear-hank-john",
+    ),
+    FeedConfig(
+        name="The Universe (Crash Course Pods)",
+        url="https://rss.art19.com/crash-course-the-universe",
     ),
 ]
