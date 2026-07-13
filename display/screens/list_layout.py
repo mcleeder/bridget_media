@@ -11,6 +11,8 @@ HEADER_HEIGHT: Final[int] = 23
 ROW_HEIGHT: Final[int] = 35
 VISIBLE_ROWS: Final[int] = 3
 SIDEBAR_X: Final[int] = DISPLAY_WIDTH - 36
+# Per-row action button column (queue toggle / remove), just left of the sidebar
+ACTION_X: Final[int] = SIDEBAR_X - 36
 
 _SIDEBAR_MIDDLE_Y: Final[int] = (HEADER_HEIGHT + DISPLAY_HEIGHT) // 2
 
@@ -57,6 +59,10 @@ class ListScroller:
 
 def is_sidebar_touch(x: int, y: int) -> bool:
     return x >= SIDEBAR_X and y >= HEADER_HEIGHT
+
+
+def is_action_zone_touch(x: int, y: int) -> bool:
+    return ACTION_X <= x < SIDEBAR_X and y >= HEADER_HEIGHT
 
 
 def row_index_at(y: int) -> int | None:

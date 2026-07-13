@@ -7,7 +7,7 @@ from PIL import Image
 import display.renderer as renderer
 import display.screens.list_layout as layout
 from db.models import Feed
-from display.events import Event, FeedSelected, ListScrolled
+from display.events import BackRequested, Event, FeedSelected, ListScrolled
 
 _ROW_FONT_SIZE: Final[int] = 13
 _ROW_TEXT_Y_OFFSET: Final[int] = 9
@@ -33,8 +33,8 @@ class PodcastListScreen:
             draw,
             "Podcasts",
             header_font,
-            show_back_icon=False,
-            icon_font=renderer.load_icon_font(layout.HEADER_FONT_SIZE),
+            show_back_icon=True,
+            icon_font=renderer.load_icon_font(layout.HEADER_FONT_SIZE + 4),
         )
 
         if not self._feeds:
@@ -63,6 +63,9 @@ class PodcastListScreen:
         return image
 
     def handle_touch(self, x: int, y: int) -> Event | None:
+        if y < layout.HEADER_HEIGHT:
+            return BackRequested()
+
         if layout.is_sidebar_touch(x, y):
             return ListScrolled() if self._scroller.handle_sidebar_touch(y) else None
 

@@ -8,22 +8,28 @@ from typing import Final
 
 from db.database import DatabaseError
 from db.models import Episode, Feed
-from db.queries import EpisodeRepository, FeedRepository
+from db.queries import EpisodeRepository, FeedRepository, QueueRepository
 from display.drivers.base import DisplayDriver
 from display.events import (
     BackRequested,
     EpisodeSelected,
     Event,
     FeedSelected,
+    HomeMenuItem,
+    HomeMenuSelected,
     ListScrolled,
     PlayPauseToggled,
+    QueueRemoveRequested,
+    QueueToggled,
     SkipRequested,
 )
 from display.playback import AudioPlayer, PlaybackState
 from display.screens.base import Screen
 from display.screens.episode_list import EpisodeListScreen
+from display.screens.home import HomeScreen
 from display.screens.now_playing import NowPlayingScreen
 from display.screens.podcast_list import PodcastListScreen
+from display.screens.queue_list import QueueListScreen
 from display.state_machine import AppState, transition
 
 logger = logging.getLogger(__name__)
@@ -59,22 +65,28 @@ class ScreenManager:
         driver: DisplayDriver,
         feed_repository: FeedRepository,
         episode_repository: EpisodeRepository,
+        queue_repository: QueueRepository,
         player: AudioPlayer,
     ) -> None:
         self._driver = driver
         self._feed_repository = feed_repository
         self._episode_repository = episode_repository
+        self._queue_repository = queue_repository
         self._player = player
 
-        self._state: AppState = AppState.PODCAST_LIST
+        self._state: AppState = AppState.HOME
         self._selected_feed: Feed | None = None
         self._playing_episode: Episode | None = None
+        # Where Back from Now Playing returns to — see transition()
+        self._now_playing_origin: AppState = AppState.EPISODE_LIST
         self._last_position_persist: float = 0.0
         # Start at the threshold so the very first frame is a full refresh,
         # giving later partial refreshes a base frame to diff against.
         self._transitions_since_full_refresh: int = _TRANSITIONS_BETWEEN_FULL_REFRESHES
+        self._home_screen = HomeScreen()
         self._podcast_screen = PodcastListScreen(feed_repository.get_all())
         self._episode_screen: EpisodeListScreen | None = None
+        self._queue_screen: QueueListScreen | None = None
         self._now_playing_screen: NowPlayingScreen | None = None
 
         self._show(full_refresh=True)
@@ -85,7 +97,10 @@ class ScreenManager:
             return
 
         self._apply_side_effects(event)
-        next_state = transition(self._state, event)
+        next_state = transition(self._state, event, self._now_playing_origin)
+
+        if next_state is AppState.NOW_PLAYING and self._state is not AppState.NOW_PLAYING:
+            self._now_playing_origin = self._state
 
         if next_state is not self._state:
             logger.info(
@@ -93,7 +108,10 @@ class ScreenManager:
             )
             self._state = next_state
             self._show(full_refresh=True)
-        elif isinstance(event, ListScrolled | PlayPauseToggled | SkipRequested):
+        elif isinstance(
+            event,
+            ListScrolled | PlayPauseToggled | SkipRequested | QueueToggled | QueueRemoveRequested,
+        ):
             self._show(full_refresh=False)
 
     def refresh_playback(self) -> None:
@@ -120,28 +138,36 @@ class ScreenManager:
 
     def _apply_side_effects(self, event: Event) -> None:
         match event:
+            case HomeMenuSelected(item=HomeMenuItem.QUEUE):
+                self._queue_screen = QueueListScreen(self._queue_repository.get_entries())
             case FeedSelected(feed):
                 self._selected_feed = feed
                 episodes = self._episode_repository.get_for_feed(feed.id)
-                self._episode_screen = EpisodeListScreen(feed, episodes)
+                queued = self._queue_repository.queued_episode_ids()
+                self._episode_screen = EpisodeListScreen(feed, episodes, queued)
             case EpisodeSelected(episode):
-                feed_name = self._selected_feed.name if self._selected_feed else ""
-                self._playing_episode = episode
-                self._now_playing_screen = NowPlayingScreen(episode, feed_name, self._player)
-                self._player_command(lambda: self._player.play(episode.audio_url), "play")
-                if episode.play_position_sec > 0 and not episode.played:
-                    self._player_command(
-                        lambda: self._player.seek(float(episode.play_position_sec)),
-                        "resume from saved position",
-                    )
-                self._last_position_persist = time.monotonic()
+                self._start_episode(episode)
             case BackRequested() if self._state is AppState.NOW_PLAYING:
                 state = self._read_player_state()
                 if state is not None:
                     self._persist_position_now(state)
                 self._player_command(self._player.stop, "stop")
                 self._playing_episode = None
+                # Rebuild whichever list Back returns to, so played markers
+                # and queue membership are current.
+                if self._now_playing_origin is AppState.QUEUE:
+                    self._rebuild_queue_screen()
+                else:
+                    self._rebuild_episode_screen()
+            case QueueToggled(episode):
+                if episode.id in self._queue_repository.queued_episode_ids():
+                    self._queue_repository.remove(episode.id)
+                else:
+                    self._queue_repository.add(episode.id)
                 self._rebuild_episode_screen()
+            case QueueRemoveRequested(episode):
+                self._queue_repository.remove(episode.id)
+                self._rebuild_queue_screen()
             case PlayPauseToggled():
                 self._toggle_play_pause()
             case SkipRequested(seconds) if seconds >= 0:
@@ -195,13 +221,39 @@ class ScreenManager:
             return
         self._last_position_persist = time.monotonic()
 
+    def _start_episode(self, episode: Episode) -> None:
+        """Begin playback and build the Now Playing screen.
+
+        Feed name comes from the repository, not _selected_feed — playback can
+        start from the queue, where no feed is selected.
+        """
+        feed = self._feed_repository.get_by_id(episode.feed_id)
+        feed_name = feed.name if feed is not None else ""
+        self._playing_episode = episode
+        self._now_playing_screen = NowPlayingScreen(episode, feed_name, self._player)
+        self._player_command(lambda: self._player.play(episode.audio_url), "play")
+        if episode.play_position_sec > 0 and not episode.played:
+            self._player_command(
+                lambda: self._player.seek(float(episode.play_position_sec)),
+                "resume from saved position",
+            )
+        self._last_position_persist = time.monotonic()
+
     def _rebuild_episode_screen(self) -> None:
         """Re-query the selected feed so played markers and new episodes are current."""
         if self._selected_feed is None:
             return
         scroll_offset = self._episode_screen.scroll_offset if self._episode_screen else 0
         episodes = self._episode_repository.get_for_feed(self._selected_feed.id)
-        self._episode_screen = EpisodeListScreen(self._selected_feed, episodes, scroll_offset)
+        queued = self._queue_repository.queued_episode_ids()
+        self._episode_screen = EpisodeListScreen(
+            self._selected_feed, episodes, queued, scroll_offset
+        )
+
+    def _rebuild_queue_screen(self) -> None:
+        """Re-query the queue, preserving scroll position."""
+        scroll_offset = self._queue_screen.scroll_offset if self._queue_screen else 0
+        self._queue_screen = QueueListScreen(self._queue_repository.get_entries(), scroll_offset)
 
     def _toggle_play_pause(self) -> None:
         state = self._read_player_state()
@@ -227,6 +279,8 @@ class ScreenManager:
 
     def _current_screen(self) -> Screen:
         match self._state:
+            case AppState.HOME:
+                return self._home_screen
             case AppState.PODCAST_LIST:
                 return self._podcast_screen
             case AppState.EPISODE_LIST:
@@ -237,6 +291,13 @@ class ScreenManager:
                 if self._now_playing_screen is None:
                     raise DisplayError("NOW_PLAYING state reached without a now-playing screen")
                 return self._now_playing_screen
+            case AppState.QUEUE:
+                if self._queue_screen is None:
+                    raise DisplayError("QUEUE state reached without a queue screen")
+                return self._queue_screen
+            # Screen lands in Phase 6; until then no event leads here.
+            case AppState.BLUETOOTH:
+                raise DisplayError("BLUETOOTH screen not implemented yet (Phase 6)")
 
     def _show(self, full_refresh: bool) -> None:
         image = self._current_screen().render()

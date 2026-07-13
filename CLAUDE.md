@@ -48,8 +48,8 @@ main.py            ← app entry point, event loop
 
 Navigation is an explicit state machine, not a screen stack.
 
-- **`display/state_machine.py`** — `AppState` enum (`PODCAST_LIST`, `EPISODE_LIST`, `NOW_PLAYING`) and a pure `transition(state, event) → AppState`. No side effects live here.
-- **`display/events.py`** — frozen event dataclasses: `FeedSelected`, `EpisodeSelected`, `BackRequested`, `ListScrolled`, `PlayPauseToggled`, `SkipRequested`.
+- **`display/state_machine.py`** — `AppState` enum (`HOME`, `PODCAST_LIST`, `EPISODE_LIST`, `NOW_PLAYING`, `QUEUE`, `BLUETOOTH`) and a pure `transition(state, event, now_playing_origin) → AppState`. No side effects live here. NOW_PLAYING is reachable from more than one screen (episode list, queue), so Back from it returns to `now_playing_origin` — `ScreenManager` tracks it and passes it in, keeping `transition()` pure.
+- **`display/events.py`** — frozen event dataclasses: `HomeMenuSelected(item: HomeMenuItem)`, `FeedSelected`, `EpisodeSelected`, `BackRequested`, `ListScrolled`, `PlayPauseToggled`, `SkipRequested`, `QueueToggled(episode)`, `QueueRemoveRequested(episode)`.
 - **Screens** (`display/screens/`) only render and translate touches into events (`handle_touch(x, y) → Event | None`). They never navigate, never touch the player, never construct other screens. `Screen` is a Protocol (`display/screens/base.py`).
 - **`display/manager.py`** — `ScreenManager` drives the machine: applies each event's side effects (player commands, screen construction), calls `transition()`, and refreshes the display — **partial refresh everywhere, with a true full refresh every Nth state transition** (`_TRANSITIONS_BETWEEN_FULL_REFRESHES`) to clear e-ink ghosting without flashing on every navigation.
 
@@ -57,12 +57,18 @@ Transitions:
 
 | From | Event | To |
 |---|---|---|
+| HOME | HomeMenuSelected(PODCASTS) | PODCAST_LIST |
+| HOME | HomeMenuSelected(QUEUE) | QUEUE |
+| HOME | HomeMenuSelected(BLUETOOTH) | BLUETOOTH *(arm lands in Phase 6 — no-op today)* |
 | PODCAST_LIST | FeedSelected | EPISODE_LIST |
+| PODCAST_LIST | BackRequested | HOME |
 | EPISODE_LIST | EpisodeSelected | NOW_PLAYING (starts playback) |
 | EPISODE_LIST | BackRequested | PODCAST_LIST |
-| NOW_PLAYING | BackRequested (stops playback) | EPISODE_LIST |
+| QUEUE | EpisodeSelected / BackRequested | NOW_PLAYING / HOME |
+| BLUETOOTH | BackRequested | HOME *(Phase 6)* |
+| NOW_PLAYING | BackRequested (stops playback) | `now_playing_origin` |
 
-Anything else is a no-op that keeps the current state.
+Anything else is a no-op that keeps the current state. Initial state is HOME. `_current_screen()` has a `DisplayError`-raising placeholder arm for BLUETOOTH until its screen exists (Phase 6). `QueueToggled` / `QueueRemoveRequested` don't navigate — the manager updates the queue in the DB, rebuilds the current list screen (scroll preserved), and partial-refreshes.
 
 `display` never imports `player`: playback flows through the `AudioPlayer` / `PlaybackState` Protocols in `display/playback.py`, which `PlayerController` satisfies structurally. `ScreenManager` wraps player calls in a broad `except Exception` (with a why-comment) because the player's exception types live above the display layer — a playback failure degrades to a log line, never a UI crash. This is also what makes the simulator work on Windows with no MPD.
 
@@ -86,7 +92,15 @@ CREATE TABLE episodes (
     played       BOOLEAN DEFAULT 0,
     play_position_sec INTEGER DEFAULT 0
 );
+
+CREATE TABLE queue (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    episode_id INTEGER NOT NULL UNIQUE REFERENCES episodes(id),
+    added_at   TEXT NOT NULL
+);
 ```
+
+The queue is FIFO (`ORDER BY id`, no position column). `UNIQUE(episode_id)` + `INSERT OR IGNORE` make double-queueing a no-op. Entries are removed when an episode **finishes** (Phase 5's auto-advance), not when it starts — restarting mid-episode keeps the entry.
 
 ## Display / UI
 
@@ -99,9 +113,12 @@ CREATE TABLE episodes (
 
 ### Screens
 
-1. **Podcast List** — scrollable list of feed names; tap a row to enter
-2. **Episode List** — episodes for selected feed (title + date, ● = unplayed); tap header to go back, tap a row to play
-3. **Now Playing** — feed name, wrapped episode title (2 lines max), progress bar with elapsed/total times, bottom control bar
+1. **Home** — root menu ("Bridget Media" header), three fixed rows (Bluetooth / Podcasts / Next), icon left + chevron right, no scrolling, no back button; header + 3×35px rows exactly fill 128px
+2. **Podcast List** — scrollable list of feed names; tap a row to enter, tap header to go back to Home
+3. **Episode List** — episodes for selected feed (title + date, ● = unplayed); tap header to go back, tap a row to play, tap the action-zone icon (+ / ✓) to toggle queue membership
+4. **Now Playing** — feed name, wrapped episode title (2 lines max), progress bar with elapsed/total times, bottom control bar; Back returns to whichever screen started playback
+5. **Next (queue)** — FIFO queue: episode title + feed name per row, remove icon in the action zone, tap a row to play (Back from Now Playing returns here); "Queue is empty" state
+6. **Bluetooth** — Phase 6.
 
 ### Layout & Touch Zones
 
@@ -109,6 +126,7 @@ Shared list geometry lives in `display/screens/list_layout.py`:
 
 - **Header** — 23px black bar (title; on Episode List it's also the back button, with a back icon)
 - **Rows** — 3 visible rows × 35px, finger-sized
+- **Action zone** — 36px column just left of the sidebar (`ACTION_X = SIDEBAR_X - 36`), one icon button per row (episode list: queue + / ✓; queue: remove); row text clips at `ACTION_X - 12`
 - **Scroll sidebar** — right-edge 36px column with up/down chevrons; chevrons only draw when scrolling that direction is possible; tap top half = up, bottom half = down; scrolls use partial refresh (no flicker)
 
 Now Playing controls are bottom-anchored (y=95..128), four 74px-wide icon buttons: back, replay-30, play/pause (inverted black button, primary action), forward-30.
@@ -200,8 +218,10 @@ pi_media/
 │       ├── __init__.py
 │       ├── base.py            # Screen Protocol
 │       ├── list_layout.py     # shared list geometry, ListScroller, sidebar
+│       ├── home.py            # root menu (Bluetooth / Podcasts / Next)
 │       ├── podcast_list.py
 │       ├── episode_list.py
+│       ├── queue_list.py
 │       └── now_playing.py
 └── assets/
     └── fonts/                 # DejaVuSans.ttf, MaterialIcons-Regular.ttf (+ .codepoints)
@@ -396,10 +416,39 @@ python -m mypy --strict . --exclude test_display.py
 
 **Audio verification (2026-07-11)** — EarFun UBOOM L speaker paired/trusted and set as MPD output via `configure-speaker`; live playback, ±30s skips, pause/resume, and resume-from-position all confirmed on the device (after the player-layer fixes in Key Notes below). A failed player command degrades to a log line by design, which on-screen looks like a dead button — check `journalctl -u pi-media` before assuming a touch problem.
 
-### Phase 3 — Future
-- [ ] Feed management UI (add/remove RSS feeds) — device has no keyboard; plan is manual file sync of a feeds file the app reads instead of hardcoded `config.FEEDS`. Note: feeds removed from config are never pruned from the DB, so they linger on the podcast list (visible in the local dev DB, which still has 'Hardcore History')
-- [ ] Listen history screen
-- [ ] Web interface for remote management
+### Phase 3 — Home Menu + Navigation Rework ✅ COMPLETE (2026-07-12)
+- [x] Root `HomeScreen` (`display/screens/home.py`): three rows — Bluetooth, Podcasts, Next — icons + chevrons, reusing list geometry
+- [x] `AppState` gains `HOME` (new initial state), `QUEUE`, `BLUETOOTH`; `transition()` gains the `now_playing_origin` parameter (see UI State Machine)
+- [x] `HomeMenuItem` / `HomeMenuSelected` events; podcast list header is now a back-to-home button
+- [x] New icons: `ICON_BLUETOOTH`, `ICON_PODCASTS`, `ICON_QUEUE_MUSIC`, `ICON_CHEVRON_RIGHT`
+- Tapping Bluetooth/Next on Home is a deliberate no-op until Phases 4/6 add their transition arms
+
+### Phase 4 — Episode Queue ✅ COMPLETE (2026-07-12)
+- [x] `queue` table appended to `_SCHEMA` (`CREATE TABLE IF NOT EXISTS` runs every boot — new tables need no migration): `id INTEGER PK AUTOINCREMENT, episode_id INTEGER NOT NULL UNIQUE REFERENCES episodes(id), added_at TEXT NOT NULL`
+- [x] `QueueEntry(id, episode, feed_name, added_at)` frozen dataclass; `QueueRepository`: `add` (INSERT OR IGNORE), `remove`, `get_entries` (JOIN episodes+feeds, ORDER BY q.id — FIFO, no position column), `first_entry`, `queued_episode_ids`; plus `FeedRepository.get_by_id`
+- [x] Episode list + button: `ACTION_X = SIDEBAR_X - 36` zone in `list_layout.py`; toggles queue membership via `QueueToggled(episode)` (`ICON_PLAYLIST_ADD e03b` ↔ `ICON_CHECK e5ca`); titles clip at `ACTION_X - 12`
+- [x] `QueueListScreen` (`display/screens/queue_list.py`): title + feed-name rows, `ICON_REMOVE_CIRCLE_OUTLINE e15d` in action zone → `QueueRemoveRequested`, row tap → `EpisodeSelected`, header "Next" with back icon
+- [x] Manager: `queue_repository` dep; extracted `_start_episode(episode)` (feed name via `get_by_id`, not `_selected_feed` — queue playback has no selected feed); Back-from-NOW_PLAYING rebuilds episode **or** queue screen per `_now_playing_origin`; `QueueToggled | QueueRemoveRequested` join the partial-refresh event tuple
+- [x] Queue entries are removed on natural finish, not on start (restart mid-episode keeps the entry) — removal side is Phase 5's auto-advance; today entries persist until removed by hand
+- [x] Verify-skill coords: action zone at (240, 40)/(240, 75)/(240, 110)
+- Verified via scripted-touch harness (18 checks: toggle on/off, FIFO order, feed-name join, remove, play-from-queue with correct URL, origin-aware Back both ways) + simulator smoke run; ruff + `mypy --strict` clean
+
+### Phase 5 — Auto-Advance (simulator-shippable; confirm on Pi)
+- [ ] `PlaybackState.is_stopped` (MPD `state == "stop"`) in `player/controller.py` + the `display/playback.py` Protocol
+- [ ] Natural-finish rule: current poll `is_stopped` AND previous poll `is_playing` with `elapsed/duration ≥ _PLAYED_FRACTION_THRESHOLD` (manager keeps `_last_playback_state`; reset on stop/new episode). Immune to decode-failure stops (far from end) and user Back (clears `_playing_episode` first)
+- [ ] `refresh_playback()` restructure: poll whenever `_playing_episode` is set (any screen), `_show` only on NOW_PLAYING — fixes mark-played/persist silently stopping off-screen; guard `_persist_position_throttled` with `is_playing` so a stopped state can't zero a saved position
+- [ ] `_advance_queue()`: remove finished from queue, defensively mark played, `first_entry()` → `_start_episode`; rebuild NOW_PLAYING/QUEUE screen if showing. Any natural finish pops the queue head, queue-started or not
+
+### Phase 6 — Bluetooth Screen + Pairing Script + Aux Output (Pi-verified)
+- [ ] `bluetooth/controller.py`: `BluetoothController`, `BluetoothError`, frozen `BluetoothDevice(mac, name, is_connected)`; `bluetoothctl` via `subprocess.run(..., timeout=…)` — `devices Paired` (fallback `paired-devices`), `info <MAC>` → "Connected: yes", `connect` (20s), `disconnect` (10s)
+- [ ] `display/bluetooth_control.py`: `BluetoothDevice` + `BluetoothService` Protocols (mirrors `playback.py`); manager gets a `_bluetooth_command` wrapper (errors → status text, like `_player_command`)
+- [ ] `activate_device` = connect + `sudo -n /usr/local/bin/configure-speaker <MAC>` (MPD restart heals via `_execute` reconnect); screen draws a "Connecting…" partial frame, then blocks (~20s poll-loop pause is fine)
+- [ ] `BluetoothScreen` (`display/screens/bluetooth_list.py`): device rows, `ICON_BLUETOOTH_CONNECTED e1a8` on the connected one; tap unconnected → switch, tap connected → disconnect; empty state points at `deploy/pair_speaker.sh`
+- [ ] `deploy/pair_speaker.sh` (Git Bash → SSH, deploy.sh conventions): `sudo rfkill unblock bluetooth` → `power on` → `--timeout 15 scan on` (required before `pair` accepts the MAC) → `pair`/`trust`/`connect` → `configure-speaker`; `--scan` mode just lists MACs
+- [ ] Aux mirror: second `audio_output` in `deploy/mpd.conf` — `type "alsa"`, `device "plughw:CARD=Headphones"` (card-by-name is reboot-stable), `mixer_type "software"`; setup_pi.sh gets an idempotent append (grep-guard + `tee -a` + mpd restart) because the no-clobber MAC guard stops template updates reaching a configured Pi; decoder blocks untouched
+- [ ] setup_pi.sh: `usermod -aG bluetooth "$RUN_USER"` (only `mpd` has it today)
+- [ ] On Windows the Bluetooth screen shows the error status (no bluetoothctl) — expected
+
 
 ## Key Notes
 

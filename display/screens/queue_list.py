@@ -6,29 +6,26 @@ from PIL import Image
 
 import display.renderer as renderer
 import display.screens.list_layout as layout
-from db.models import Episode, Feed
-from display.events import BackRequested, EpisodeSelected, Event, ListScrolled, QueueToggled
+from db.models import QueueEntry
+from display.events import (
+    BackRequested,
+    EpisodeSelected,
+    Event,
+    ListScrolled,
+    QueueRemoveRequested,
+)
 
 _TITLE_FONT_SIZE: Final[int] = 12
 _META_FONT_SIZE: Final[int] = 9
 _TITLE_Y_OFFSET: Final[int] = 4
 _META_Y_OFFSET: Final[int] = 21
-_UNPLAYED_MARKER: Final[str] = "● "
 _ACTION_ICON_SIZE: Final[int] = 18
 
 
-class EpisodeListScreen:
-    def __init__(
-        self,
-        feed: Feed,
-        episodes: list[Episode],
-        queued_episode_ids: set[int],
-        scroll_offset: int = 0,
-    ) -> None:
-        self._feed = feed
-        self._episodes = episodes
-        self._queued_episode_ids = queued_episode_ids
-        self._scroller = layout.ListScroller(len(episodes))
+class QueueListScreen:
+    def __init__(self, entries: list[QueueEntry], scroll_offset: int = 0) -> None:
+        self._entries = entries
+        self._scroller = layout.ListScroller(len(entries))
         self._scroller.scroll_to(scroll_offset)
 
     @property
@@ -45,43 +42,41 @@ class EpisodeListScreen:
 
         layout.draw_header(
             draw,
-            self._feed.name,
+            "Next",
             header_font,
             show_back_icon=True,
             icon_font=renderer.load_icon_font(layout.HEADER_FONT_SIZE + 4),
         )
 
-        if not self._episodes:
+        if not self._entries:
             draw.text(
                 (6, layout.row_top(0) + _TITLE_Y_OFFSET),
-                "No episodes",
+                "Queue is empty",
                 font=title_font,
                 fill=renderer.BLACK,
             )
             return image
 
-        visible = self._episodes[self._scroller.visible_slice()]
-        for index, episode in enumerate(visible):
+        visible = self._entries[self._scroller.visible_slice()]
+        for index, entry in enumerate(visible):
             y = layout.row_top(index)
             # Stop at the sidebar so row dividers don't cut through the chevrons
             renderer.draw_divider(draw, y, x_end=layout.SIDEBAR_X)
 
-            marker = "" if episode.played else _UNPLAYED_MARKER
             renderer.draw_text_clipped(
                 draw,
-                marker + episode.title,
+                entry.episode.title,
                 (6, y + _TITLE_Y_OFFSET),
                 title_font,
                 max_width=layout.ACTION_X - 12,
             )
-            if episode.published_at is not None:
-                date_text = episode.published_at.strftime("%d %b %Y").lstrip("0")
-                draw.text((6, y + _META_Y_OFFSET), date_text, font=meta_font, fill=renderer.BLACK)
+            draw.text(
+                (6, y + _META_Y_OFFSET), entry.feed_name, font=meta_font, fill=renderer.BLACK
+            )
 
-            is_queued = episode.id in self._queued_episode_ids
             renderer.draw_icon_centered(
                 draw,
-                renderer.ICON_CHECK if is_queued else renderer.ICON_PLAYLIST_ADD,
+                renderer.ICON_REMOVE_CIRCLE_OUTLINE,
                 (layout.ACTION_X, y, layout.SIDEBAR_X, y + layout.ROW_HEIGHT),
                 action_font,
             )
@@ -100,11 +95,11 @@ class EpisodeListScreen:
         if visible_row is None:
             return None
 
-        episode_index = self._scroller.offset + visible_row
-        if episode_index >= len(self._episodes):
+        entry_index = self._scroller.offset + visible_row
+        if entry_index >= len(self._entries):
             return None
 
-        episode = self._episodes[episode_index]
+        entry = self._entries[entry_index]
         if layout.is_action_zone_touch(x, y):
-            return QueueToggled(episode)
-        return EpisodeSelected(episode)
+            return QueueRemoveRequested(entry.episode)
+        return EpisodeSelected(entry.episode)

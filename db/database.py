@@ -27,6 +27,12 @@ CREATE TABLE IF NOT EXISTS episodes (
     play_position_sec INTEGER NOT NULL DEFAULT 0,
     UNIQUE(feed_id, audio_url)
 );
+
+CREATE TABLE IF NOT EXISTS queue (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    episode_id INTEGER NOT NULL UNIQUE REFERENCES episodes(id),
+    added_at   TEXT    NOT NULL
+);
 """
 
 

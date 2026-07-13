@@ -23,6 +23,13 @@ ICON_ARROW_UP: Final[str] = "\ue316"
 ICON_ARROW_DOWN: Final[str] = "\ue313"
 ICON_FORWARD_30: Final[str] = "\ue057"
 ICON_ERROR_OUTLINE: Final[str] = "\ue001"
+ICON_BLUETOOTH: Final[str] = "\ue1a7"
+ICON_PODCASTS: Final[str] = "\uf048"
+ICON_QUEUE_MUSIC: Final[str] = "\ue03d"
+ICON_CHEVRON_RIGHT: Final[str] = "\ue5cc"
+ICON_PLAYLIST_ADD: Final[str] = "\ue03b"
+ICON_CHECK: Final[str] = "\ue5ca"
+ICON_REMOVE_CIRCLE_OUTLINE: Final[str] = "\ue15d"
 
 
 @functools.cache

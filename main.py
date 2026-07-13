@@ -9,7 +9,7 @@ from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 
 import config
-from db import Database, EpisodeRepository, FeedRepository
+from db import Database, EpisodeRepository, FeedRepository, QueueRepository
 from display.drivers.base import DisplayDriver
 from display.manager import ScreenManager
 from feeds import FeedFetcher
@@ -39,6 +39,7 @@ def main(simulate: bool) -> None:
     with Database(config.DB_PATH) as db:
         feed_repo = FeedRepository(db)
         episode_repo = EpisodeRepository(db)
+        queue_repo = QueueRepository(db)
         fetcher = FeedFetcher(feed_repo, episode_repo)
 
         # The UI comes up from the database immediately; the first fetch (minutes
@@ -76,6 +77,7 @@ def main(simulate: bool) -> None:
             driver=driver,
             feed_repository=feed_repo,
             episode_repository=episode_repo,
+            queue_repository=queue_repo,
             player=player,
         )
 

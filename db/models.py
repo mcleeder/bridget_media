@@ -22,3 +22,11 @@ class Episode:
     duration_sec: int | None
     played: bool
     play_position_sec: int
+
+
+@dataclass(frozen=True)
+class QueueEntry:
+    id: int
+    episode: Episode
+    feed_name: str
+    added_at: datetime
