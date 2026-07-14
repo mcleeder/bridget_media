@@ -33,7 +33,7 @@
 </script>
 
 <main>
-  <h1>Pi Media — Podcasts</h1>
+  <h1>Bridget Media — Podcasts</h1>
   {#if loadError}
     <p class="error">{loadError}</p>
   {/if}
