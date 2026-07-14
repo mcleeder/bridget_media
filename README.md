@@ -49,15 +49,16 @@ All run from the repo root in **Git Bash** on Windows. Connection details (`PI_N
 ### Fresh Pi (after a reflash)
 
 ```bash
-ssh-keygen -R tinypie3.local                     # only if reflashed — clears the stale host key
+ssh-keygen -R <host>.local                       # only if reflashed — clears the stale host key
 bash deploy/setup_ssh_key.sh                     # one-time: sets up passwordless SSH (prompts for .env password)
 bash deploy/deploy.sh                             # syncs code to ~/pi_media on the Pi
-ssh mike_pi@tinypie3.local 'bash ~/pi_media/deploy/setup_pi.sh'   # installs packages, enables SPI/I2C, sets up both services
+ssh <user>@<host>.local 'bash ~/pi_media/deploy/setup_pi.sh'   # installs packages, enables SPI/I2C, sets up both services
 ```
+`<user>`/`<host>` = `PI_USERNAME`/`PI_NETWORK_NAME` from `.env`.
 
 `setup_pi.sh` is idempotent — safe to re-run any time (e.g. after adding a new apt/pip dependency). It needs passwordless `sudo` on the Pi; if the imager-created user doesn't have it:
 ```bash
-ssh mike_pi@tinypie3.local "echo 'mike_pi ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/010_mike_pi-nopasswd"
+ssh <user>@<host>.local "echo '<user> ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/010_<user>-nopasswd"
 ```
 
 Then pair the speaker (one-time per device):
@@ -77,8 +78,8 @@ This builds the Svelte frontend locally, tar-over-ssh syncs everything (excludin
 ### Logs / debugging on the Pi
 
 ```bash
-ssh mike_pi@tinypie3.local 'journalctl -u pi-media -f'          # player/display app
-ssh mike_pi@tinypie3.local 'journalctl -u pi-media-feeds -f'    # feed manager web app
+ssh <user>@<host>.local 'journalctl -u pi-media -f'          # player/display app
+ssh <user>@<host>.local 'journalctl -u pi-media-feeds -f'    # feed manager web app
 ```
 
 ### Script reference
