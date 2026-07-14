@@ -1,5 +1,6 @@
 # Secrets — SSH credentials for the Pi live here
 .env
+CLAUDE.md
 
 # Python
 __pycache__/

@@ -1,5 +1,8 @@
 # Pi Media — Raspberry Pi Podcast Player
 
+- **Sonnet 5** for planning, see CLAUDE.md
+- **Fable** implemented code and did some extra feature planning.
+
 ## Project Overview
 
 A podcast player running on a Raspberry Pi with a Waveshare 2.9" e-ink touch display. Streams audio via MPD to a Bluetooth speaker. No local audio storage — pure streaming. Feeds are managed via a small companion web app (`feed_manager/`) rather than the e-ink screen itself, which is too small/keyboard-less for search-and-add.
