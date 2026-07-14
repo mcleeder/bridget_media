@@ -44,7 +44,7 @@ cd feed_manager/frontend && npm install
 
 ## Deploy scripts
 
-All run from the repo root in **Git Bash** on Windows. Connection details (`PI_NETWORK_NAME`, `PI_USERNAME`, password) come from `.env` (git-ignored, not committed).
+All run from the repo root in **Git Bash** on Windows. Connection details (`PI_NETWORK_NAME`, `PI_USERNAME`, password) come from `.env`.
 
 ### Fresh Pi (after a reflash)
 
