@@ -2,7 +2,7 @@
 
 A podcast player for a Raspberry Pi 3B+ with a Waveshare 2.9" e-ink touchscreen. Streams audio (no local storage) via MPD to a Bluetooth speaker. Feeds are managed from a phone/laptop through a small companion web app, not on the tiny screen itself.
 
-Full architecture, schema, coding standards, and phase history live in [CLAUDE.md](CLAUDE.md). This doc is the fast path for running, debugging, and deploying.
+This doc is the fast path for running, debugging, and deploying.
 
 ## Two entry points
 
@@ -19,9 +19,9 @@ Both are independent OS processes talking to the same `pi_media.db` (SQLite, WAL
 config  →  db  →  feeds / player / bluetooth  →  display  →  main / feed_manager
 ```
 
-- **`db/`** — schema + repositories (`FeedRepository`, `EpisodeRepository`, `QueueRepository`). One `sqlite3` connection per thread/process, always — sharing one across threads corrupts it (hit this once, see CLAUDE.md "Key Notes").
+- **`db/`** — schema + repositories (`FeedRepository`, `EpisodeRepository`, `QueueRepository`). One `sqlite3` connection per thread/process, always — sharing one across threads corrupts it.
 - **`feeds/`** — `feedparser` fetch → DB. `feeds/fetcher.py` reads feeds from the DB (not `config.py` — that's a one-time seed only).
-- **`player/`** — wraps `python-mpd2`. Resolves redirect chains and auto-reconnects on MPD's 60s idle-drop; see CLAUDE.md if playback silently dies after sitting on a list.
+- **`player/`** — wraps `python-mpd2`. Resolves redirect chains and auto-reconnects, since MPD drops idle connections after 60s (otherwise playback silently dies after sitting on a list).
 - **`bluetooth/`** — shells out to `bluetoothctl`.
 - **`display/`** — the UI. Pure `transition()` state machine (`display/state_machine.py`) + `ScreenManager` (`display/manager.py`) that applies side effects and redraws. Screens only render and turn touches into events — they never navigate or call player/bluetooth directly (they go through Protocols in `display/playback.py` / `display/bluetooth_control.py`). This is what makes `--simulate` work with no MPD/hardware.
 - **`feed_manager/`** — Flask API (`routes.py`) + built Svelte frontend, served as static files.
@@ -31,7 +31,7 @@ config  →  db  →  feeds / player / bluetooth  →  display  →  main / feed
 ## Local development
 
 ```bash
-conda activate pi_media
+conda activate <env>
 python main.py --simulate        # tkinter window, mouse = touch
 ```
 
