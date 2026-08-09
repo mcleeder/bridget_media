@@ -4,6 +4,8 @@ from enum import Enum, auto
 
 from display.events import (
     BackRequested,
+    BluetoothPairRequested,
+    BluetoothScanRequested,
     EpisodeSelected,
     Event,
     FeedSelected,
@@ -19,6 +21,7 @@ class AppState(Enum):
     NOW_PLAYING = auto()
     QUEUE = auto()
     BLUETOOTH = auto()
+    BLUETOOTH_DISCOVER = auto()
 
 
 def transition(state: AppState, event: Event, now_playing_origin: AppState) -> AppState:
@@ -36,6 +39,15 @@ def transition(state: AppState, event: Event, now_playing_origin: AppState) -> A
             return AppState.BLUETOOTH
         case AppState.BLUETOOTH, BackRequested():
             return AppState.HOME
+        case AppState.BLUETOOTH, BluetoothScanRequested():
+            return AppState.BLUETOOTH_DISCOVER
+        case AppState.BLUETOOTH_DISCOVER, BackRequested():
+            return AppState.BLUETOOTH
+        # Pairing always returns to the paired list: success shows the device
+        # there as connected, failure shows a banner the manager sets. Keeping
+        # the outcome out of the transition is what keeps this function pure.
+        case AppState.BLUETOOTH_DISCOVER, BluetoothPairRequested():
+            return AppState.BLUETOOTH
         case AppState.QUEUE, EpisodeSelected():
             return AppState.NOW_PLAYING
         case AppState.QUEUE, BackRequested():

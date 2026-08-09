@@ -100,6 +100,9 @@ def main(simulate: bool) -> None:
                 for x, y in driver.read_touch():
                     manager.handle_touch(x, y)
 
+                # Picks up a finished Bluetooth device scan (runs on its own thread)
+                manager.poll_background_work()
+
                 if fetch_completed.is_set():
                     fetch_completed.clear()
                     manager.reload_feeds()

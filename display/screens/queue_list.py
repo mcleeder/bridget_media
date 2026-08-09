@@ -4,6 +4,7 @@ from typing import Final
 
 from PIL import Image
 
+import display.copy as copy
 import display.renderer as renderer
 import display.screens.list_layout as layout
 from db.models import QueueEntry
@@ -42,19 +43,14 @@ class QueueListScreen:
 
         layout.draw_header(
             draw,
-            "Next",
+            copy.HEADER_QUEUE,
             header_font,
             show_back_icon=True,
             icon_font=renderer.load_icon_font(layout.HEADER_FONT_SIZE + 4),
         )
 
         if not self._entries:
-            draw.text(
-                (6, layout.row_top(0) + _TITLE_Y_OFFSET),
-                "Queue is empty",
-                font=title_font,
-                fill=renderer.BLACK,
-            )
+            layout.draw_status_message(draw, copy.QUEUE_EMPTY, renderer.ICON_QUEUE_MUSIC)
             return image
 
         visible = self._entries[self._scroller.visible_slice()]

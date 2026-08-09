@@ -4,6 +4,7 @@ from typing import Final
 
 from PIL import Image
 
+import display.copy as copy
 import display.renderer as renderer
 import display.screens.list_layout as layout
 from db.models import Feed
@@ -31,19 +32,14 @@ class PodcastListScreen:
 
         layout.draw_header(
             draw,
-            "Podcasts",
+            copy.HEADER_PODCASTS,
             header_font,
             show_back_icon=True,
             icon_font=renderer.load_icon_font(layout.HEADER_FONT_SIZE + 4),
         )
 
         if not self._feeds:
-            draw.text(
-                (6, layout.row_top(0) + _ROW_TEXT_Y_OFFSET),
-                "No podcasts — add feeds in config.py",
-                font=row_font,
-                fill=renderer.BLACK,
-            )
+            layout.draw_status_message(draw, copy.NO_PODCASTS, renderer.ICON_PODCASTS)
             return image
 
         visible = self._feeds[self._scroller.visible_slice()]

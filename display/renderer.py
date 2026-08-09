@@ -3,7 +3,7 @@ from __future__ import annotations
 import functools
 from typing import Final
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 from config import DISPLAY_HEIGHT, DISPLAY_WIDTH
 
@@ -31,6 +31,13 @@ ICON_CHEVRON_RIGHT: Final[str] = "\ue5cc"
 ICON_PLAYLIST_ADD: Final[str] = "\ue03b"
 ICON_PLAYLIST_ADD_CHECK: Final[str] = "\ue065"
 ICON_REMOVE_CIRCLE_OUTLINE: Final[str] = "\ue15d"
+ICON_BLUETOOTH_SEARCHING: Final[str] = "\ue1aa"
+ICON_LINK_OFF: Final[str] = "\ue16f"
+ICON_ADD: Final[str] = "\ue145"
+
+# A glyph pair renders as one text run, which draw_icon_centered centres as a
+# whole \u2014 "+" ahead of the search icon, so the button reads as "add a device".
+ICON_ADD_BLUETOOTH: Final[str] = ICON_ADD + ICON_BLUETOOTH_SEARCHING
 
 
 @functools.cache
@@ -72,6 +79,37 @@ def draw_text_clipped(
     draw.text(xy, text + ellipsis, font=font, fill=fill)
 
 
+def wrap_lines(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    max_width: int,
+    max_lines: int,
+) -> list[str]:
+    """Word-wrap text into at most max_lines; overflow lands on the last line.
+
+    The last line is left long on purpose — callers draw it with
+    draw_text_clipped, which is what applies the ellipsis.
+    """
+    words = text.split()
+    lines: list[str] = []
+    line = ""
+
+    for index, word in enumerate(words):
+        candidate = f"{line} {word}".strip()
+        if draw.textlength(candidate, font=font) <= max_width:
+            line = candidate
+            continue
+        if len(lines) == max_lines - 1:
+            return [*lines, " ".join([line, *words[index:]]).strip()]
+        lines.append(line)
+        line = word
+
+    if line:
+        lines.append(line)
+    return lines
+
+
 def draw_text_wrapped(
     draw: ImageDraw.ImageDraw,
     text: str,
@@ -83,29 +121,48 @@ def draw_text_wrapped(
     fill: int = BLACK,
 ) -> None:
     """Draw word-wrapped text up to max_lines; the last line is ellipsis-clipped."""
-    words = text.split()
     x, y = xy
-    line = ""
-    lines_drawn = 0
+    for index, line in enumerate(wrap_lines(draw, text, font, max_width, max_lines)):
+        draw_text_clipped(draw, line, (x, y + index * line_height), font, max_width, fill)
 
-    for index, word in enumerate(words):
-        candidate = f"{line} {word}".strip()
-        if draw.textlength(candidate, font=font) <= max_width:
-            line = candidate
-            continue
 
-        if lines_drawn == max_lines - 1:
-            remainder = " ".join([line, *words[index:]]).strip()
-            draw_text_clipped(draw, remainder, (x, y), font, max_width, fill)
-            return
+def draw_text_wrapped_centered(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    top_y: int,
+    font: ImageFont.FreeTypeFont,
+    max_width: int,
+    max_lines: int,
+    line_height: int,
+    fill: int = BLACK,
+) -> int:
+    """Draw word-wrapped text with each line horizontally centred. Returns the y below it."""
+    lines = wrap_lines(draw, text, font, max_width, max_lines)
+    for index, line in enumerate(lines):
+        width = min(int(draw.textlength(line, font=font)), max_width)
+        x = max(0, (DISPLAY_WIDTH - width) // 2)
+        draw_text_clipped(draw, line, (x, top_y + index * line_height), font, max_width, fill)
+    return top_y + len(lines) * line_height
 
-        draw.text((x, y), line, font=font, fill=fill)
-        y += line_height
-        lines_drawn += 1
-        line = word
 
-    if line:
-        draw_text_clipped(draw, line, (x, y), font, max_width, fill)
+@functools.cache
+def _icon_ink_box(icon: str, size: int) -> tuple[int, int, int, int]:
+    """Bounds of a glyph's *rendered* ink, relative to its draw origin.
+
+    Not the same as `textbbox`, which reports the antialiased extent. The
+    e-ink canvas is 1-bit, so those soft edges threshold away and the ink
+    lands smaller — and higher — than textbbox predicts. Centring on
+    textbbox therefore drew every icon 1-4px above its rect. Measured by
+    rendering the glyph exactly as the real canvas does.
+    """
+    pad = size * 2
+    probe = Image.new("1", (pad * 2, pad * 2), WHITE)
+    ImageDraw.Draw(probe).text((pad, pad), icon, font=_load_font(ICON_FONT_PATH, size), fill=BLACK)
+    box = ImageChops.invert(probe.convert("L")).getbbox()
+    if box is None:  # whitespace-only glyph
+        return (0, 0, 0, 0)
+    left, top, right, bottom = box
+    return (left - pad, top - pad, right - pad, bottom - pad)
 
 
 def draw_icon_centered(
@@ -115,9 +172,9 @@ def draw_icon_centered(
     font: ImageFont.FreeTypeFont,
     fill: int = BLACK,
 ) -> None:
-    """Draw a single icon glyph centred within rect."""
+    """Draw one or more icon glyphs centred within rect."""
     x0, y0, x1, y1 = rect
-    left, top, right, bottom = draw.textbbox((0, 0), icon, font=font)
+    left, top, right, bottom = _icon_ink_box(icon, font.size)
     icon_w = right - left
     icon_h = bottom - top
     x = x0 + (x1 - x0 - icon_w) // 2 - left

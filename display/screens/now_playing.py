@@ -5,6 +5,7 @@ from typing import Final
 
 from PIL import Image, ImageDraw
 
+import display.copy as copy
 import display.renderer as renderer
 from config import DISPLAY_HEIGHT, DISPLAY_WIDTH
 from db.models import Episode
@@ -22,10 +23,10 @@ _FEED_NAME_Y: Final[int] = 3
 _TITLE_Y: Final[int] = 16
 _TITLE_LINE_HEIGHT: Final[int] = 15
 _TITLE_MAX_LINES: Final[int] = 2
+_DATE_GAP: Final[int] = 2
 _PROGRESS_RECT: Final[tuple[int, int, int, int]] = (6, 60, DISPLAY_WIDTH - 6, 68)
 _TIME_Y: Final[int] = 73
 
-_ERROR_TEXT: Final[str] = "MPD unreachable"
 _ERROR_FONT_SIZE: Final[int] = 10
 _ERROR_ICON_SIZE: Final[int] = 14
 _ERROR_ICON_GAP: Final[int] = 5
@@ -86,6 +87,9 @@ class NowPlayingScreen:
         renderer.draw_text_clipped(
             draw, self._feed_name, (6, _FEED_NAME_Y), feed_font, max_width=DISPLAY_WIDTH - 12
         )
+        title_lines = renderer.wrap_lines(
+            draw, self._episode.title, title_font, DISPLAY_WIDTH - 12, _TITLE_MAX_LINES
+        )
         renderer.draw_text_wrapped(
             draw,
             self._episode.title,
@@ -95,10 +99,24 @@ class NowPlayingScreen:
             max_lines=_TITLE_MAX_LINES,
             line_height=_TITLE_LINE_HEIGHT,
         )
+        # Sits directly under the title, so a one-line title doesn't leave a gap.
+        self._draw_published_date(draw, _TITLE_Y + len(title_lines) * _TITLE_LINE_HEIGHT)
 
         self._draw_progress(draw, state)
         self._draw_controls(draw, state)
         return image
+
+    def _draw_published_date(self, draw: ImageDraw.ImageDraw, y: int) -> None:
+        if self._episode.published_at is None:
+            return
+        # Same format as the episode list, so a title reads the same either place.
+        text = self._episode.published_at.strftime("%d %b %Y").lstrip("0")
+        draw.text(
+            (6, y + _DATE_GAP),
+            text,
+            font=renderer.load_text_font(_FEED_FONT_SIZE),
+            fill=renderer.BLACK,
+        )
 
     def handle_touch(self, x: int, y: int) -> Event | None:
         if _hit(_BTN_BACK, x, y):
@@ -149,7 +167,7 @@ class NowPlayingScreen:
         error_font = renderer.load_text_font(_ERROR_FONT_SIZE)
         icon_font = renderer.load_icon_font(_ERROR_ICON_SIZE)
 
-        text_width = int(draw.textlength(_ERROR_TEXT, font=error_font))
+        text_width = int(draw.textlength(copy.PLAYER_UNREACHABLE, font=error_font))
         total_width = _ERROR_ICON_SIZE + _ERROR_ICON_GAP + text_width
         x = (DISPLAY_WIDTH - total_width) // 2
 
@@ -161,7 +179,7 @@ class NowPlayingScreen:
         )
         draw.text(
             (x + _ERROR_ICON_SIZE + _ERROR_ICON_GAP, _ERROR_TEXT_Y),
-            _ERROR_TEXT,
+            copy.PLAYER_UNREACHABLE,
             font=error_font,
             fill=renderer.BLACK,
         )

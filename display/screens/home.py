@@ -4,6 +4,7 @@ from typing import Final
 
 from PIL import Image
 
+import display.copy as copy
 import display.renderer as renderer
 import display.screens.list_layout as layout
 from config import DISPLAY_WIDTH
@@ -16,9 +17,9 @@ _ICON_ZONE_WIDTH: Final[int] = 40
 _CHEVRON_ZONE_WIDTH: Final[int] = 30
 
 _MENU_ROWS: Final[list[tuple[str, str, HomeMenuItem]]] = [
-    ("Bluetooth", renderer.ICON_BLUETOOTH, HomeMenuItem.BLUETOOTH),
-    ("Podcasts", renderer.ICON_PODCASTS, HomeMenuItem.PODCASTS),
-    ("Next", renderer.ICON_QUEUE_MUSIC, HomeMenuItem.QUEUE),
+    (copy.HOME_ITEM_BLUETOOTH, renderer.ICON_BLUETOOTH, HomeMenuItem.BLUETOOTH),
+    (copy.HOME_ITEM_PODCASTS, renderer.ICON_PODCASTS, HomeMenuItem.PODCASTS),
+    (copy.HOME_ITEM_QUEUE, renderer.ICON_QUEUE_MUSIC, HomeMenuItem.QUEUE),
 ]
 
 
@@ -33,7 +34,7 @@ class HomeScreen:
 
         layout.draw_header(
             draw,
-            "Bridget Media",
+            copy.HEADER_HOME,
             header_font,
             show_back_icon=False,
             icon_font=renderer.load_icon_font(layout.HEADER_FONT_SIZE),

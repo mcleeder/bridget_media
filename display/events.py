@@ -64,6 +64,21 @@ class BluetoothDeviceSelected:
     device: BluetoothDevice
 
 
+@dataclass(frozen=True)
+class BluetoothScanRequested:
+    pass
+
+
+@dataclass(frozen=True)
+class BluetoothPairRequested:
+    device: BluetoothDevice
+
+
+@dataclass(frozen=True)
+class BluetoothForgetRequested:
+    device: BluetoothDevice
+
+
 Event: TypeAlias = (
     HomeMenuSelected
     | FeedSelected
@@ -75,4 +90,7 @@ Event: TypeAlias = (
     | QueueToggled
     | QueueRemoveRequested
     | BluetoothDeviceSelected
+    | BluetoothScanRequested
+    | BluetoothPairRequested
+    | BluetoothForgetRequested
 )

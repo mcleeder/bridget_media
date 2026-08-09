@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import queue
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Final
 
+import display.copy as copy
 from db.database import DatabaseError
 from db.models import Episode, Feed
 from db.queries import EpisodeRepository, FeedRepository, QueueRepository
@@ -14,6 +17,9 @@ from display.drivers.base import DisplayDriver
 from display.events import (
     BackRequested,
     BluetoothDeviceSelected,
+    BluetoothForgetRequested,
+    BluetoothPairRequested,
+    BluetoothScanRequested,
     EpisodeSelected,
     Event,
     FeedSelected,
@@ -27,6 +33,7 @@ from display.events import (
 )
 from display.playback import AudioPlayer, PlaybackState
 from display.screens.base import Screen
+from display.screens.bluetooth_discover import BluetoothDiscoverScreen
 from display.screens.bluetooth_list import BluetoothScreen
 from display.screens.episode_list import EpisodeListScreen
 from display.screens.home import HomeScreen
@@ -104,6 +111,20 @@ class ScreenManager:
         self._queue_screen: QueueListScreen | None = None
         self._now_playing_screen: NowPlayingScreen | None = None
         self._bluetooth_screen: BluetoothScreen | None = None
+        self._discover_screen: BluetoothDiscoverScreen | None = None
+
+        # Device discovery is the one bluetooth call run off the UI thread: it
+        # takes ~15s and, unlike pairing, the user may well want to back out of
+        # it. The worker only shells out to bluetoothctl — it touches no sqlite
+        # connection and never draws — so the result crosses back as a plain
+        # list through this queue and all rendering stays on the UI thread.
+        self._scan_results: queue.Queue[tuple[int, Sequence[BluetoothDevice] | None]] = (
+            queue.Queue(maxsize=1)
+        )
+        self._scan_in_progress: bool = False
+        # Bumped whenever a scan is abandoned, so a late result is discarded
+        # instead of redrawing a screen the user already left.
+        self._scan_generation: int = 0
 
         self._show(full_refresh=True)
 
@@ -136,7 +157,9 @@ class ScreenManager:
             | SkipRequested
             | QueueToggled
             | QueueRemoveRequested
-            | BluetoothDeviceSelected,
+            | BluetoothDeviceSelected
+            | BluetoothScanRequested
+            | BluetoothForgetRequested,
         ):
             self._show(full_refresh=False)
 
@@ -197,9 +220,19 @@ class ScreenManager:
                     lambda: self._bluetooth.activate_device(device.mac), "activate device"
                 )
                 self._rebuild_bluetooth_screen()
+                self._drain_touches()
             case BluetoothDeviceSelected(device):
                 self._bluetooth_command(
                     lambda: self._bluetooth.disconnect_device(device.mac), "disconnect device"
+                )
+                self._rebuild_bluetooth_screen()
+            case BluetoothScanRequested():
+                self._start_scan()
+            case BluetoothPairRequested(device):
+                self._pair_device(device)
+            case BluetoothForgetRequested(device):
+                self._bluetooth_command(
+                    lambda: self._bluetooth.forget_device(device.mac), "forget device"
                 )
                 self._rebuild_bluetooth_screen()
             case FeedSelected(feed):
@@ -209,6 +242,10 @@ class ScreenManager:
                 self._episode_screen = EpisodeListScreen(feed, episodes, queued)
             case EpisodeSelected(episode):
                 self._start_episode(episode)
+            case BackRequested() if self._state is AppState.BLUETOOTH_DISCOVER:
+                # The paired list behind us is still current — nothing in this
+                # screen changes it except pairing, which doesn't exit via Back.
+                self._abandon_scan()
             case BackRequested() if self._state is AppState.NOW_PLAYING:
                 state = self._read_player_state()
                 if state is not None:
@@ -409,32 +446,131 @@ class ScreenManager:
             # a playback failure must degrade to a log line, not kill the UI loop.
             logger.exception("Player command failed: %s", description)
 
-    def _bluetooth_command(self, command: Callable[[], None], description: str) -> None:
+    def _bluetooth_command(self, command: Callable[[], None], description: str) -> bool:
+        """Run a bluetooth command. Returns False if it failed (pairing branches on it)."""
         try:
             command()
         except Exception:
             # Bluetooth exception types live above this layer (see layer hierarchy);
             # a bluetooth failure must degrade to a log line, not kill the UI loop.
             logger.exception("Bluetooth command failed: %s", description)
+            return False
+        return True
 
-    def _rebuild_bluetooth_screen(self) -> None:
+    def _rebuild_bluetooth_screen(self, status_message: str | None = None) -> None:
         """Re-query paired devices; a fetch failure shows as an on-screen error."""
         scroll_offset = self._bluetooth_screen.scroll_offset if self._bluetooth_screen else 0
+        devices: Sequence[BluetoothDevice] | None
         try:
             devices = self._bluetooth.list_paired_devices()
         except Exception:
             # Bluetooth exception types live above this layer (see layer hierarchy).
             logger.exception("Could not list paired Bluetooth devices")
             devices = None
-        self._bluetooth_screen = BluetoothScreen(devices, scroll_offset)
+        self._bluetooth_screen = BluetoothScreen(
+            devices,
+            scroll_offset,
+            status_message=status_message,
+            is_status_error=status_message is not None,
+        )
+
+    def _rebuild_discover_screen(
+        self, devices: Sequence[BluetoothDevice] | None, is_scanning: bool = False
+    ) -> None:
+        scroll_offset = self._discover_screen.scroll_offset if self._discover_screen else 0
+        self._discover_screen = BluetoothDiscoverScreen(devices, scroll_offset, is_scanning)
+
+    def _start_scan(self) -> None:
+        """Kick off a background device scan and show the scanning frame.
+
+        Deliberately does not draw: handle_touch redraws right after this,
+        by which point _state has moved to BLUETOOTH_DISCOVER.
+        """
+        if self._scan_in_progress:
+            logger.info("Ignoring scan request: a scan is already running")
+            return
+
+        self._scan_in_progress = True
+        self._rebuild_discover_screen(None, is_scanning=True)
+        generation = self._scan_generation
+        # Daemon so Ctrl-C never waits out a 15s scan on shutdown.
+        threading.Thread(
+            target=self._run_scan, args=(generation,), name="bluetooth-scan", daemon=True
+        ).start()
+
+    def _run_scan(self, generation: int) -> None:
+        """Scan worker. Runs off the UI thread — must not draw or touch the DB."""
+        devices: Sequence[BluetoothDevice] | None
+        try:
+            devices = self._bluetooth.scan_for_devices()
+        except Exception:
+            # Bluetooth exception types live above this layer (see layer
+            # hierarchy); None renders as the on-screen unreachable state.
+            logger.exception("Bluetooth scan failed")
+            devices = None
+        self._scan_results.put((generation, devices))
+
+    def poll_background_work(self) -> None:
+        """Collect a finished scan. Called every tick from the main loop."""
+        try:
+            generation, devices = self._scan_results.get_nowait()
+        except queue.Empty:
+            return
+
+        self._scan_in_progress = False
+        if generation != self._scan_generation:
+            logger.info("Discarding stale Bluetooth scan result")
+            return
+        self._rebuild_discover_screen(devices)
+        if self._state is AppState.BLUETOOTH_DISCOVER:
+            self._show(full_refresh=False)
+
+    def _abandon_scan(self) -> None:
+        """Stop caring about an in-flight scan. The worker still finishes; its
+        result is dropped by the generation check in poll_background_work."""
+        if self._scan_in_progress:
+            self._scan_generation += 1
+            self._scan_in_progress = False
+
+    def _pair_device(self, device: BluetoothDevice) -> None:
+        """Pair, then connect. Both block, so a status frame goes up first."""
+        self._show_bluetooth_status(copy.BLUETOOTH_PAIRING.format(name=device.name))
+        paired = self._bluetooth_command(
+            lambda: self._bluetooth.pair_device(device.mac), "pair device"
+        )
+        if not paired:
+            self._rebuild_bluetooth_screen(
+                status_message=copy.BLUETOOTH_PAIRING_FAILED.format(name=device.name)
+            )
+            self._drain_touches()
+            return
+
+        self._show_bluetooth_status(copy.BLUETOOTH_CONNECTING.format(name=device.name))
+        self._bluetooth_command(
+            lambda: self._bluetooth.activate_device(device.mac), "activate device"
+        )
+        self._rebuild_bluetooth_screen()
+        self._drain_touches()
 
     def _show_bluetooth_connecting(self, device: BluetoothDevice) -> None:
         """Flash a 'Connecting…' frame before the blocking activate_device call."""
+        self._show_bluetooth_status(copy.BLUETOOTH_CONNECTING.format(name=device.name))
+
+    def _show_bluetooth_status(self, message: str) -> None:
         scroll_offset = self._bluetooth_screen.scroll_offset if self._bluetooth_screen else 0
-        self._bluetooth_screen = BluetoothScreen(
-            None, scroll_offset, connecting_device_name=device.name
-        )
-        self._show(full_refresh=False)
+        screen = BluetoothScreen(None, scroll_offset, status_message=message)
+        self._bluetooth_screen = screen
+        # Drawn directly: pairing arrives here from BLUETOOTH_DISCOVER, so
+        # _current_screen() would still return the discover screen.
+        self._show_screen(screen, full_refresh=False)
+
+    def _drain_touches(self) -> None:
+        """Discard taps buffered during a multi-second blocking bluetooth call.
+
+        Without this they replay against whatever screen comes up next.
+        """
+        self._driver.read_touch()
+        self._last_touch_time = time.monotonic()
 
     def _current_screen(self) -> Screen:
         match self._state:
@@ -458,9 +594,22 @@ class ScreenManager:
                 if self._bluetooth_screen is None:
                     raise DisplayError("BLUETOOTH state reached without a bluetooth screen")
                 return self._bluetooth_screen
+            case AppState.BLUETOOTH_DISCOVER:
+                if self._discover_screen is None:
+                    raise DisplayError("BLUETOOTH_DISCOVER state reached without a screen")
+                return self._discover_screen
 
     def _show(self, full_refresh: bool) -> None:
-        image = self._current_screen().render()
+        self._show_screen(self._current_screen(), full_refresh)
+
+    def _show_screen(self, screen: Screen, full_refresh: bool) -> None:
+        """Render a specific screen.
+
+        Taken directly (rather than via _current_screen) by the modal status
+        frames, which must draw the screen the transition is heading *to* while
+        _state still points at the one being left.
+        """
+        image = screen.render()
         if full_refresh:
             self._transitions_since_full_refresh += 1
             if self._transitions_since_full_refresh > _TRANSITIONS_BETWEEN_FULL_REFRESHES:
