@@ -5,7 +5,7 @@ from flask import Blueprint, Response, g, jsonify, request
 from db.database import DatabaseError
 from db.models import Feed
 from db.queries import EpisodeRepository, FeedRepository
-from feeds.fetcher import FeedFetcher, FeedFetchError
+from feeds.fetcher import FeedFetcher, FeedFetchError, InvalidFeedUrlError
 from feeds.itunes_search import ItunesSearchClient, ItunesSearchError
 
 api_blueprint = Blueprint("api", __name__)
@@ -42,6 +42,8 @@ def add_feed() -> tuple[Response, int]:
     fetcher = FeedFetcher(feed_repository, episode_repository)
     try:
         feed = fetcher.fetch_one(name, url)
+    except InvalidFeedUrlError as exc:
+        return jsonify({"error": str(exc)}), 400
     except FeedFetchError as exc:
         return jsonify({"error": str(exc)}), 502
     return jsonify(_feed_to_dict(feed)), 201

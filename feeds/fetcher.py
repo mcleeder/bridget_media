@@ -4,7 +4,8 @@ import calendar
 import logging
 import time
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Final
+from urllib.parse import urlparse
 
 import feedparser
 
@@ -13,9 +14,31 @@ from db.queries import EpisodeRepository, FeedRepository
 
 logger = logging.getLogger(__name__)
 
+_ALLOWED_URL_SCHEMES: Final[frozenset[str]] = frozenset({"http", "https"})
+
 
 class FeedFetchError(Exception):
     pass
+
+
+class InvalidFeedUrlError(FeedFetchError):
+    """The caller supplied something that isn't a fetchable web URL.
+
+    A subclass so fetch_all's existing handler still catches it, but the web app
+    can answer 400 instead of 502 — it's the caller's mistake, not the feed's.
+    """
+
+
+def _validate_feed_url(url: str) -> None:
+    """Reject anything feedparser would read as a local path or non-web URL.
+
+    feedparser.parse() opens a filesystem path or file:// URL as readily as an
+    http one, and this URL arrives from an unauthenticated web request — without
+    this check the feed manager is a local-file-read and internal-port-scan
+    primitive for anyone who can reach it.
+    """
+    if urlparse(url).scheme.lower() not in _ALLOWED_URL_SCHEMES:
+        raise InvalidFeedUrlError(f"Feed URL must start with http:// or https:// — got '{url}'")
 
 
 class FeedFetcher:
@@ -35,6 +58,9 @@ class FeedFetcher:
                 logger.error("Failed to fetch feed '%s': %s", feed.name, exc)
 
     def fetch_one(self, name: str, url: str) -> Feed:
+        # Before the upsert: a rejected URL must not leave a feed row behind.
+        _validate_feed_url(url)
+
         feed = self._feed_repository.upsert(name, url)
 
         result: Any = feedparser.parse(url)
