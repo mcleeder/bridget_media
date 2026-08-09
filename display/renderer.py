@@ -34,6 +34,8 @@ ICON_REMOVE_CIRCLE_OUTLINE: Final[str] = "\ue15d"
 ICON_BLUETOOTH_SEARCHING: Final[str] = "\ue1aa"
 ICON_LINK_OFF: Final[str] = "\ue16f"
 ICON_ADD: Final[str] = "\ue145"
+ICON_RADIO: Final[str] = "\ue03e"
+ICON_GRAPHIC_EQ: Final[str] = "\ue1b8"
 
 # A glyph pair renders as one text run, which draw_icon_centered centres as a
 # whole \u2014 "+" ahead of the search icon, so the button reads as "add a device".

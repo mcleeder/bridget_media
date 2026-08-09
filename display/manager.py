@@ -9,6 +9,7 @@ from collections.abc import Callable, Sequence
 from typing import Final
 
 import display.copy as copy
+from config import Station
 from db.database import DatabaseError
 from db.models import Episode, Feed
 from db.queries import EpisodeRepository, FeedRepository, QueueRepository
@@ -30,6 +31,7 @@ from display.events import (
     QueueRemoveRequested,
     QueueToggled,
     SkipRequested,
+    StationSelected,
 )
 from display.playback import AudioPlayer, PlaybackState
 from display.screens.base import Screen
@@ -40,6 +42,8 @@ from display.screens.home import HomeScreen
 from display.screens.now_playing import NowPlayingScreen
 from display.screens.podcast_list import PodcastListScreen
 from display.screens.queue_list import QueueListScreen
+from display.screens.radio_list import RadioListScreen
+from display.screens.radio_playing import RadioPlayingScreen
 from display.state_machine import AppState, transition
 
 logger = logging.getLogger(__name__)
@@ -84,6 +88,7 @@ class ScreenManager:
         queue_repository: QueueRepository,
         player: AudioPlayer,
         bluetooth: BluetoothService,
+        stations: Sequence[Station],
     ) -> None:
         self._driver = driver
         self._feed_repository = feed_repository
@@ -95,6 +100,10 @@ class ScreenManager:
         self._state: AppState = AppState.HOME
         self._selected_feed: Feed | None = None
         self._playing_episode: Episode | None = None
+        # Never set at the same time as _playing_episode: starting either one
+        # releases the other, so the episode polling in _poll_playback can't
+        # run against a live stream.
+        self._playing_station: Station | None = None
         # Previous playback poll — natural-finish detection compares two
         # consecutive polls. Reset whenever playback (re)starts or stops.
         self._last_playback_state: PlaybackState | None = None
@@ -107,9 +116,11 @@ class ScreenManager:
         self._transitions_since_full_refresh: int = _TRANSITIONS_BETWEEN_FULL_REFRESHES
         self._home_screen = HomeScreen()
         self._podcast_screen = PodcastListScreen(feed_repository.get_all())
+        self._radio_screen = RadioListScreen(stations)
         self._episode_screen: EpisodeListScreen | None = None
         self._queue_screen: QueueListScreen | None = None
         self._now_playing_screen: NowPlayingScreen | None = None
+        self._radio_playing_screen: RadioPlayingScreen | None = None
         self._bluetooth_screen: BluetoothScreen | None = None
         self._discover_screen: BluetoothDiscoverScreen | None = None
 
@@ -172,7 +183,9 @@ class ScreenManager:
         """
         if self._playing_episode is not None:
             self._poll_playback()
-        if self._state is AppState.NOW_PLAYING:
+        # Radio needs no polling — nothing to persist, mark or advance — but the
+        # screen is still redrawn so the play/pause icon follows a dropped stream.
+        if self._state in (AppState.NOW_PLAYING, AppState.RADIO_PLAYING):
             self._show(full_refresh=False)
 
     def _poll_playback(self) -> None:
@@ -242,17 +255,18 @@ class ScreenManager:
                 self._episode_screen = EpisodeListScreen(feed, episodes, queued)
             case EpisodeSelected(episode):
                 self._start_episode(episode)
+            case StationSelected(station):
+                self._start_station(station)
+            case BackRequested() if self._state is AppState.RADIO_PLAYING:
+                self._playing_station = None
+                self._player_command(self._player.stop, "stop")
             case BackRequested() if self._state is AppState.BLUETOOTH_DISCOVER:
                 # The paired list behind us is still current — nothing in this
                 # screen changes it except pairing, which doesn't exit via Back.
                 self._abandon_scan()
             case BackRequested() if self._state is AppState.NOW_PLAYING:
-                state = self._read_player_state()
-                if state is not None:
-                    self._persist_position_now(state)
+                self._release_playing_episode()
                 self._player_command(self._player.stop, "stop")
-                self._playing_episode = None
-                self._last_playback_state = None
                 # Rebuild whichever list Back returns to, so played markers
                 # and queue membership are current.
                 if self._now_playing_origin is AppState.QUEUE:
@@ -370,6 +384,31 @@ class ScreenManager:
             return
         self._last_position_persist = time.monotonic()
 
+    def _release_playing_episode(self) -> None:
+        """Save the position and stop tracking the current episode.
+
+        Clearing _playing_episode before the player is stopped is what keeps a
+        user-initiated stop from looking like a natural finish.
+        """
+        if self._playing_episode is None:
+            return
+        state = self._read_player_state()
+        if state is not None:
+            self._persist_position_now(state)
+        self._playing_episode = None
+        self._last_playback_state = None
+
+    def _start_station(self, station: Station) -> None:
+        """Tune in to a live stream.
+
+        Any episode is released first: it would otherwise keep being polled,
+        and its saved position overwritten from the radio stream's elapsed time.
+        """
+        self._release_playing_episode()
+        self._playing_station = station
+        self._radio_playing_screen = RadioPlayingScreen(station, self._player)
+        self._player_command(lambda: self._player.play(station.stream_url), "play station")
+
     def _start_episode(self, episode: Episode) -> None:
         """Begin playback and build the Now Playing screen.
 
@@ -378,6 +417,7 @@ class ScreenManager:
         """
         feed = self._feed_repository.get_by_id(episode.feed_id)
         feed_name = feed.name if feed is not None else ""
+        self._playing_station = None
         self._playing_episode = episode
         self._last_playback_state = None
         self._now_playing_screen = NowPlayingScreen(episode, feed_name, self._player)
@@ -598,6 +638,12 @@ class ScreenManager:
                 if self._discover_screen is None:
                     raise DisplayError("BLUETOOTH_DISCOVER state reached without a screen")
                 return self._discover_screen
+            case AppState.RADIO_LIST:
+                return self._radio_screen
+            case AppState.RADIO_PLAYING:
+                if self._radio_playing_screen is None:
+                    raise DisplayError("RADIO_PLAYING state reached without a radio screen")
+                return self._radio_playing_screen
 
     def _show(self, full_refresh: bool) -> None:
         self._show_screen(self._current_screen(), full_refresh)

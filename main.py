@@ -89,6 +89,7 @@ def main(simulate: bool) -> None:
             queue_repository=queue_repo,
             player=player,
             bluetooth=bluetooth,
+            stations=config.STATIONS,
         )
 
         last_refresh = time.monotonic()

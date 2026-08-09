@@ -11,6 +11,7 @@ from display.events import (
     FeedSelected,
     HomeMenuItem,
     HomeMenuSelected,
+    StationSelected,
 )
 
 
@@ -22,6 +23,8 @@ class AppState(Enum):
     QUEUE = auto()
     BLUETOOTH = auto()
     BLUETOOTH_DISCOVER = auto()
+    RADIO_LIST = auto()
+    RADIO_PLAYING = auto()
 
 
 def transition(state: AppState, event: Event, now_playing_origin: AppState) -> AppState:
@@ -37,6 +40,19 @@ def transition(state: AppState, event: Event, now_playing_origin: AppState) -> A
             return AppState.QUEUE
         case AppState.HOME, HomeMenuSelected(item=HomeMenuItem.BLUETOOTH):
             return AppState.BLUETOOTH
+        case AppState.HOME, HomeMenuSelected(item=HomeMenuItem.RADIO):
+            return AppState.RADIO_LIST
+        # Radio has its own player state rather than reusing NOW_PLAYING: a live
+        # stream has no duration, position or queue, so keeping it separate is
+        # what stops the episode machinery (resume, mark-played, auto-advance)
+        # from ever running against it. It is only reachable from RADIO_LIST,
+        # so Back needs no origin tracking.
+        case AppState.RADIO_LIST, StationSelected():
+            return AppState.RADIO_PLAYING
+        case AppState.RADIO_LIST, BackRequested():
+            return AppState.HOME
+        case AppState.RADIO_PLAYING, BackRequested():
+            return AppState.RADIO_LIST
         case AppState.BLUETOOTH, BackRequested():
             return AppState.HOME
         case AppState.BLUETOOTH, BluetoothScanRequested():

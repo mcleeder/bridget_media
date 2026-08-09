@@ -27,12 +27,18 @@ HEADER_PODCASTS: Final[str] = "Podcasts"
 HEADER_QUEUE: Final[str] = "Next"
 HEADER_BLUETOOTH: Final[str] = "Bluetooth"
 HEADER_ADD_DEVICE: Final[str] = "Add device"
+HEADER_RADIO: Final[str] = "Radio"
 
 # --- Row labels ---------------------------------------------------------
 
 HOME_ITEM_BLUETOOTH: Final[str] = "Bluetooth"
 HOME_ITEM_PODCASTS: Final[str] = "Podcasts"
 HOME_ITEM_QUEUE: Final[str] = "Next"
+HOME_ITEM_RADIO: Final[str] = "Radio"
+
+# Shown under the station name on the radio player. These streams carry no
+# track metadata, so "live" is genuinely all the device knows.
+RADIO_LIVE: Final[str] = "Live"
 
 DEVICE_CONNECTED: Final[str] = "Connected"
 DEVICE_TAP_TO_CONNECT: Final[str] = "Tap to connect"
@@ -55,6 +61,7 @@ BLUETOOTH_CONNECTING: Final[str] = "Getting cozy with {name}…"
 BLUETOOTH_PAIRING_FAILED: Final[str] = "{name} left you on read. Try deploy/pair_speaker.sh."
 
 QUEUE_EMPTY: Final[str] = "Your evening is wide open."
+NO_STATIONS: Final[str] = "The airwaves are empty. Someone cut the STATIONS list."
 NO_PODCASTS: Final[str] = (
     "Not one subscription to your name. Add a few from the feed manager."
 )

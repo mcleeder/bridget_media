@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import TypeAlias
 
+from config import Station
 from db.models import Episode, Feed
 from display.bluetooth_control import BluetoothDevice
 
@@ -12,6 +13,7 @@ class HomeMenuItem(Enum):
     BLUETOOTH = auto()
     PODCASTS = auto()
     QUEUE = auto()
+    RADIO = auto()
 
 
 @dataclass(frozen=True)
@@ -27,6 +29,11 @@ class FeedSelected:
 @dataclass(frozen=True)
 class EpisodeSelected:
     episode: Episode
+
+
+@dataclass(frozen=True)
+class StationSelected:
+    station: Station
 
 
 @dataclass(frozen=True)
@@ -83,6 +90,7 @@ Event: TypeAlias = (
     HomeMenuSelected
     | FeedSelected
     | EpisodeSelected
+    | StationSelected
     | BackRequested
     | ListScrolled
     | PlayPauseToggled

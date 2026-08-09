@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import display.renderer as renderer  # noqa: E402
 import display.screens.list_layout as layout  # noqa: E402
-from config import DISPLAY_HEIGHT, DISPLAY_WIDTH  # noqa: E402
+from config import DISPLAY_HEIGHT, DISPLAY_WIDTH, Station  # noqa: E402
 from db.models import Episode, Feed, QueueEntry  # noqa: E402
 from display.playback import AudioPlayer  # noqa: E402
 from display.screens.bluetooth_discover import BluetoothDiscoverScreen  # noqa: E402
@@ -33,6 +33,8 @@ from display.screens.home import HomeScreen  # noqa: E402
 from display.screens.now_playing import NowPlayingScreen  # noqa: E402
 from display.screens.podcast_list import PodcastListScreen  # noqa: E402
 from display.screens.queue_list import QueueListScreen  # noqa: E402
+from display.screens.radio_list import RadioListScreen  # noqa: E402
+from display.screens.radio_playing import RadioPlayingScreen  # noqa: E402
 
 SCALE: Final[int] = 3
 MARGIN: Final[int] = 20
@@ -162,16 +164,18 @@ def build_screens() -> list[tuple[str, Image.Image, list[Zone]]]:
         def skip_back(self, seconds: float) -> None: ...
 
     player: AudioPlayer = Player()
+    stations = [Station(name=n, stream_url="x")
+                for n in ["FIP", "FIP Rock", "FIP Jazz", "FIP Groove"]]
     header_no_action = layout.HEADER_ACTION_X
     button_w = DISPLAY_WIDTH // 4
     controls_top = 95
 
     return [
         (
-            "Home — root menu (no back button, no scrolling)",
+            "Home — root menu (no back button; scrolls, 4 items)",
             HomeScreen().render(),
             [Zone((0, 0, DISPLAY_WIDTH, layout.HEADER_HEIGHT), "no action", DEAD, show_aim=False),
-             *row_zones("open", ROW, DISPLAY_WIDTH)],
+             *row_zones("open", ROW, layout.SIDEBAR_X), *sidebar_zones()],
         ),
         (
             "Podcast List",
@@ -206,6 +210,19 @@ def build_screens() -> list[tuple[str, Image.Image, list[Zone]]]:
              Zone((layout.HEADER_ACTION_X, 0, DISPLAY_WIDTH, layout.HEADER_HEIGHT),
                   "RESCAN", ADD),
              *row_zones("pair", ROW, layout.SIDEBAR_X), *sidebar_zones()],
+        ),
+        (
+            "Radio — whole row tunes in (live streams, no queue or action zone)",
+            RadioListScreen(stations).render(),
+            [header_back(), *row_zones("play station", ROW, layout.SIDEBAR_X), *sidebar_zones()],
+        ),
+        (
+            "Radio playing — no seeking on a live stream, so no ±30s",
+            RadioPlayingScreen(stations[0], player).render(),
+            [Zone((0, 0, DISPLAY_WIDTH, controls_top), "no action", DEAD, show_aim=False),
+             Zone((0, controls_top, button_w, DISPLAY_HEIGHT), "BACK (stops)", BACK),
+             Zone((button_w, controls_top, DISPLAY_WIDTH, DISPLAY_HEIGHT),
+                  "PLAY / PAUSE", PRIMARY)],
         ),
         (
             "Now Playing — controls are bottom-anchored",
