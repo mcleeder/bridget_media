@@ -5,6 +5,11 @@
 Description=Pi Media podcast player
 After=network-online.target mpd.service
 Wants=network-online.target
+# A wiring/hardware fault is not something retrying fixes, so give up after 5
+# attempts and sit in "failed" — which `systemctl status pi-media` reports
+# plainly — instead of looping every RestartSec forever.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple

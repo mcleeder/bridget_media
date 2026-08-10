@@ -12,6 +12,7 @@ import config
 from bluetooth import BluetoothController
 from db import Database, EpisodeRepository, FeedRepository, QueueRepository
 from display.drivers.base import DisplayDriver
+from display.errors import DisplayError
 from display.manager import ScreenManager
 from feeds import FeedFetcher, seed_default_feeds
 from player import PlayerController, PlayerError
@@ -50,6 +51,17 @@ def main(simulate: bool) -> None:
 
         seed_default_feeds(feed_repo)
 
+        # Built before the scheduler starts on purpose: without a display there
+        # is no app, so failing here should cost nothing. When this ran after
+        # scheduler.start() a wiring fault turned into a restart loop that
+        # re-fetched every feed every RestartSec, hammering the network and SD
+        # card of a Pi that could not show a single frame.
+        try:
+            driver = _build_driver(simulate)
+        except DisplayError:
+            logger.exception("Display unavailable — cannot start")
+            raise SystemExit(1) from None
+
         # The UI comes up from the database immediately; the first fetch (minutes
         # on the Pi) runs in the scheduler thread and the main loop reloads the
         # podcast list when this event fires.
@@ -70,7 +82,6 @@ def main(simulate: bool) -> None:
         scheduler.start()
         logger.info("Feed fetch running in background; showing UI from database")
 
-        driver = _build_driver(simulate)
         player = PlayerController()
         bluetooth = BluetoothController()
 

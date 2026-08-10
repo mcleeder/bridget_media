@@ -1,6 +1,17 @@
 from __future__ import annotations
 
+import threading
+from typing import Any, Final
+
 from PIL import Image
+
+from display.errors import DisplayError
+
+# Waveshare's init() polls the panel's BUSY line with no timeout of its own, so
+# a missing or floating BUSY wire hangs it forever. A healthy panel finishes
+# bring-up in well under a second; this only has to be generous enough to never
+# fire on working hardware.
+_BRING_UP_TIMEOUT_SEC: Final[float] = 15.0
 
 
 class WaveshareDriver:
@@ -12,14 +23,55 @@ class WaveshareDriver:
     space our screens use.
     """
 
+    # TP_lib ships no type information, so these are Any by necessity.
+    _epd: Any
+    _touch: Any
+    _touch_current: Any
+    _touch_previous: Any
+
     def __init__(self) -> None:
         # Import deferred to avoid import errors on non-Pi environments
-        from TP_lib import epd2in9_V2, icnt86
+        try:
+            from TP_lib import epd2in9_V2, icnt86
+        except ImportError as exc:
+            raise DisplayError(
+                "TP_lib is not installed — run deploy/setup_pi.sh on the Pi"
+            ) from exc
 
-        self._epd = epd2in9_V2.EPD_2IN9_V2()
-        self._epd.init()
-        self._touch = icnt86.INCT86()  # sic — Waveshare's class-name typo
-        self._touch.ICNT_Init()
+        epd: Any = None
+        touch: Any = None
+        failure: Exception | None = None
+
+        def bring_up() -> None:
+            nonlocal epd, touch, failure
+            try:
+                epd = epd2in9_V2.EPD_2IN9_V2()
+                epd.init()
+                touch = icnt86.INCT86()  # sic — Waveshare's class-name typo
+                touch.ICNT_Init()
+            except Exception as exc:
+                # Re-raised on the constructing thread below, so the caller
+                # sees the failure rather than a dead background thread.
+                failure = exc
+
+        # Bring the hardware up on a daemon thread purely so the BUSY-line poll
+        # can time out: a stuck bring-up would otherwise block the whole app
+        # before its first frame with no log line at all. The thread can't be
+        # killed, but as a daemon it dies with the process.
+        thread = threading.Thread(target=bring_up, name="epd-bring-up", daemon=True)
+        thread.start()
+        thread.join(_BRING_UP_TIMEOUT_SEC)
+
+        if thread.is_alive():
+            raise DisplayError(
+                f"e-paper panel did not respond within {_BRING_UP_TIMEOUT_SEC:.0f}s — "
+                "check the BUSY, RST, DC and CS wiring"
+            )
+        if failure is not None:
+            raise DisplayError("e-paper panel initialisation failed") from failure
+
+        self._epd = epd
+        self._touch = touch
         self._touch_current = icnt86.ICNT_Development()
         self._touch_previous = icnt86.ICNT_Development()
 

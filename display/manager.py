@@ -15,6 +15,7 @@ from db.models import Episode, Feed
 from db.queries import EpisodeRepository, FeedRepository, QueueRepository
 from display.bluetooth_control import BluetoothDevice, BluetoothService
 from display.drivers.base import DisplayDriver
+from display.errors import DisplayError
 from display.events import (
     BackRequested,
     BluetoothDeviceSelected,
@@ -65,10 +66,6 @@ _TOUCH_DEBOUNCE_SEC: Final[float] = 0.3
 # transition gets a real full refresh to clear accumulated e-ink ghosting
 # (the same page-flash cadence e-readers use).
 _TRANSITIONS_BETWEEN_FULL_REFRESHES: Final[int] = 5
-
-
-class DisplayError(Exception):
-    pass
 
 
 class ScreenManager:

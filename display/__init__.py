@@ -1,4 +1,5 @@
 from display.drivers.base import DisplayDriver
-from display.manager import DisplayError, ScreenManager
+from display.errors import DisplayError
+from display.manager import ScreenManager
 
 __all__ = ["DisplayDriver", "DisplayError", "ScreenManager"]
