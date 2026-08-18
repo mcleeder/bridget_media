@@ -29,6 +29,7 @@ HEADER_BLUETOOTH: Final[str] = "Bluetooth"
 HEADER_ADD_DEVICE: Final[str] = "Add device"
 HEADER_RADIO: Final[str] = "Radio"
 HEADER_WIFI: Final[str] = "Wi-Fi"
+HEADER_WIFI_SETUP: Final[str] = "Setup mode"
 
 # --- Row labels ---------------------------------------------------------
 
@@ -69,12 +70,26 @@ WIFI_NO_INTERNET: Final[str] = "No internet"
 WIFI_HOTSPOT_ACTIVE: Final[str] = "Setup hotspot"
 WIFI_NO_ADDRESS: Final[str] = "No address yet"
 
+# Labels on the setup-hotspot screen. Plain, not voicey: someone is copying
+# these onto a phone, possibly a friend who has never seen the device before.
+WIFI_SETUP_JOIN_LABEL: Final[str] = "Join this Wi-Fi"
+WIFI_SETUP_PASSWORD_LABEL: Final[str] = "Password"
+WIFI_SETUP_OPEN_LABEL: Final[str] = "Then open"
+
 WIFI_CHECKING: Final[str] = "Asking around about the network…"
 WIFI_UNREACHABLE: Final[str] = (
     "This box has no idea what a network is. Nothing to report."
 )
 WIFI_OFFLINE: Final[str] = (
     "Off the grid entirely. No Wi-Fi, no gossip, no downloads."
+)
+
+WIFI_HOTSPOT_STARTING: Final[str] = "Throwing my own network. Give me a moment…"
+WIFI_HOTSPOT_FAILED: Final[str] = (
+    "Could not get a hotspot up. Plug in a screen and a keyboard, darling."
+)
+WIFI_NO_CREDENTIALS: Final[str] = (
+    "No hotspot credentials on this box. Re-run deploy/setup_pi.sh."
 )
 
 QUEUE_EMPTY: Final[str] = "Your evening is wide open."

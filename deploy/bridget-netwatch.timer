@@ -1,0 +1,17 @@
+# Runs the network watchdog about once a minute.
+#
+# OnBootSec is deliberately generous: NetworkManager needs time to try the
+# saved networks after a cold boot, and counting those seconds as "offline"
+# would raise a hotspot on a box that was about to connect perfectly well.
+
+[Unit]
+Description=Run the Bridget Media network watchdog every minute
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Unit=bridget-netwatch.service
+
+[Install]
+WantedBy=timers.target

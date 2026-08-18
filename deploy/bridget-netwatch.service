@@ -1,0 +1,19 @@
+# One-shot network check: raises the setup hotspot when the box has been
+# offline for a while, and drops it again. Driven by bridget-netwatch.timer.
+# @USER@ and @APP_DIR@ are filled in by setup_pi.sh.
+#
+# Runs as root, unlike the two app units: it must work when the app user's
+# session, the player app, or the web app are all broken — that is the whole
+# point of keeping the hotspot decision out of them.
+
+[Unit]
+Description=Bridget Media network watchdog (setup hotspot)
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+# Relative paths in config.py resolve against this, same as the app units.
+WorkingDirectory=@APP_DIR@
+ExecStart=/usr/bin/python3 -m network.watchdog
+PrivateTmp=yes

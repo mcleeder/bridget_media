@@ -6,8 +6,9 @@ import logging
 from pathlib import Path
 from typing import Final
 
-from flask import Flask, Response, g, jsonify, request, send_from_directory
+from flask import Flask, Response, g, jsonify, redirect, request, send_from_directory
 from waitress import serve
+from werkzeug.wrappers import Response as WerkzeugResponse
 
 import config
 from db.database import Database
@@ -56,6 +57,20 @@ def _is_allowed_host(host_header: str) -> bool:
     return address.is_private or address.is_loopback or address.is_link_local
 
 
+def _is_hotspot_client(remote_address: str | None) -> bool:
+    """True for a phone connected to our own setup hotspot.
+
+    NetworkManager's shared mode always hands out this /24, so the client's
+    address is a cheap, exact signal — no nmcli call per request.
+    """
+    if not remote_address:
+        return False
+    try:
+        return ipaddress.ip_address(remote_address) in ipaddress.ip_network(config.HOTSPOT_SUBNET)
+    except ValueError:
+        return False
+
+
 def create_app() -> Flask:
     app = Flask(__name__, static_folder=str(_FRONTEND_DIST), static_url_path="")
     app.register_blueprint(api_blueprint, url_prefix="/api")
@@ -64,6 +79,14 @@ def create_app() -> Flask:
     @app.before_request
     def _check_host() -> tuple[Response, int] | None:
         if _is_allowed_host(request.host):
+            return None
+        # Captive-portal DNS answers *every* hostname with this box's address,
+        # so a phone's probe arrives as Host: connectivitycheck.gstatic.com —
+        # which the allowlist above rightly refuses. Clients on the hotspot
+        # subnet are therefore let through to be redirected to the portal, but
+        # only for page requests: /api/ keeps strict host checking everywhere,
+        # so nothing that reads or changes state loses rebinding protection.
+        if _is_hotspot_client(request.remote_addr) and not request.path.startswith("/api/"):
             return None
         logger.warning("Rejected request with Host header %r", request.host)
         return jsonify({"error": "unrecognised host"}), 403
@@ -81,6 +104,35 @@ def create_app() -> Flask:
     @app.route("/")
     def index() -> Response:
         return send_from_directory(str(_FRONTEND_DIST), "index.html")
+
+    # The URLs phones fetch to decide whether a network has working internet.
+    # Answering them with a redirect instead of the expected 204/success is
+    # what pops the "Sign in to network" sheet. Best-effort by design: Android
+    # increasingly just asks whether to stay connected, so the e-ink panel
+    # states the hotspot name and portal URL outright rather than relying on
+    # this firing.
+    @app.route("/hotspot-detect.html")  # iOS / macOS
+    @app.route("/library/test/success.html")  # iOS, older
+    @app.route("/generate_204")  # Android
+    @app.route("/gen_204")  # Android, older
+    @app.route("/ncsi.txt")  # Windows
+    @app.route("/connecttest.txt")  # Windows
+    @app.route("/canonical.html")  # Ubuntu / GNOME
+    def captive_portal_probe() -> WerkzeugResponse:
+        return redirect(config.PORTAL_URL, code=302)
+
+    @app.errorhandler(404)
+    def unknown_path(exc: object) -> tuple[Response, int] | WerkzeugResponse:
+        """Send stray requests to the portal, but only from the hotspot.
+
+        Wildcard DNS in AP mode points every hostname at this box, so a phone
+        opening any address at all lands on the setup page. On the home
+        network this stays a plain 404 — silently redirecting every typo
+        would be baffling.
+        """
+        if not request.path.startswith("/api/") and _is_hotspot_client(request.remote_addr):
+            return redirect(config.PORTAL_URL, code=302)
+        return jsonify({"error": "not found"}), 404
 
     return app
 

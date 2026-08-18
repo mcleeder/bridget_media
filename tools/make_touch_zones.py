@@ -36,6 +36,7 @@ from display.screens.queue_list import QueueListScreen  # noqa: E402
 from display.screens.radio_list import RadioListScreen  # noqa: E402
 from display.screens.radio_playing import RadioPlayingScreen  # noqa: E402
 from display.screens.wifi_list import WifiScreen  # noqa: E402
+from display.screens.wifi_setup import WifiSetupScreen  # noqa: E402
 
 SCALE: Final[int] = 3
 MARGIN: Final[int] = 20
@@ -176,6 +177,11 @@ def build_screens() -> list[tuple[str, Image.Image, list[Zone]]]:
         is_hotspot_active: bool = False
 
     status = Status()
+
+    @dataclass(frozen=True)
+    class Credentials:
+        ssid: str = "Bridget-Setup-ab12"
+        password: str = "swordfish123"
     header_no_action = layout.HEADER_ACTION_X
     button_w = DISPLAY_WIDTH // 4
     controls_top = 95
@@ -222,8 +228,17 @@ def build_screens() -> list[tuple[str, Image.Image, list[Zone]]]:
              *row_zones("pair", ROW, layout.SIDEBAR_X), *sidebar_zones()],
         ),
         (
-            "Wi-Fi — read-only status; the header is the only tap target",
+            "Wi-Fi — status only; header right raises the setup hotspot",
             WifiScreen(status).render(),
+            [header_back(header_no_action),
+             Zone((layout.HEADER_ACTION_X, 0, DISPLAY_WIDTH, layout.HEADER_HEIGHT),
+                  "START SETUP HOTSPOT", ADD),
+             Zone((0, layout.HEADER_HEIGHT, DISPLAY_WIDTH, DISPLAY_HEIGHT),
+                  "no action", DEAD, show_aim=False)],
+        ),
+        (
+            "Setup mode — join QR + instructions; header is the only tap target",
+            WifiSetupScreen(Credentials()).render(),
             [header_back(),
              Zone((0, layout.HEADER_HEIGHT, DISPLAY_WIDTH, DISPLAY_HEIGHT),
                   "no action", DEAD, show_aim=False)],

@@ -1,4 +1,4 @@
-import type { Feed, PodcastSearchResult } from './types'
+import type { Feed, NetworkStatus, PodcastSearchResult, WifiNetwork } from './types'
 
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -33,4 +33,31 @@ export async function searchPodcasts(term: string, offset = 0): Promise<PodcastS
   const params = new URLSearchParams({ q: term, offset: String(offset) })
   const response = await fetch(`/api/search?${params.toString()}`)
   return handleResponse<PodcastSearchResult[]>(response)
+}
+
+export async function fetchNetworkStatus(): Promise<NetworkStatus> {
+  const response = await fetch('/api/network/status')
+  return handleResponse<NetworkStatus>(response)
+}
+
+export async function scanNetworks(): Promise<WifiNetwork[]> {
+  const response = await fetch('/api/network/scan')
+  return handleResponse<WifiNetwork[]>(response)
+}
+
+// Answers 202 and joins in the background: switching networks tears down the
+// hotspot this request arrived over, so a dropped connection here is the
+// success case, not a failure. Callers must treat a network error after a
+// submitted join as "probably worked — go look at the screen".
+export async function joinNetwork(
+  ssid: string,
+  password: string,
+  isHidden = false,
+): Promise<void> {
+  const response = await fetch('/api/network/join', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ssid, password, is_hidden: isHidden }),
+  })
+  await handleResponse<{ status: string }>(response)
 }

@@ -26,6 +26,35 @@ FEED_MANAGER_HOST: Final[str] = f"{MDNS_HOSTNAME}.local"
 FEED_MANAGER_PORT: Final[int] = 80
 
 
+# --- Setup hotspot (Phase 10) -------------------------------------------
+# Generated once per device by deploy/setup_pi.sh and read by the panel (to
+# draw the join QR), the watchdog (to raise the AP) and nothing else.
+HOTSPOT_CREDENTIALS_PATH: Final[str] = "hotspot_credentials.json"
+NETWORK_WATCHDOG_STATE_PATH: Final[str] = "network_watchdog_state.json"
+
+# NetworkManager's shared mode always puts the Pi here, handing clients the
+# rest of the /24. The subnet is how the web app tells a phone sitting on the
+# setup hotspot from a guest on the home LAN, without shelling out to nmcli on
+# every request.
+HOTSPOT_ADDRESS: Final[str] = "10.42.0.1"
+HOTSPOT_SUBNET: Final[str] = "10.42.0.0/24"
+PORTAL_URL: Final[str] = f"http://{HOTSPOT_ADDRESS}"
+
+# With a 60s watchdog timer this is ~3 minutes offline before the AP goes up.
+# A count, not a single sample, so a router rebooting doesn't raise a hotspot.
+OFFLINE_CHECKS_BEFORE_HOTSPOT: Final[int] = 3
+
+# A hard cap, not a nicety: the portal takes a Wi-Fi password over plain HTTP,
+# so an AP nobody is watching must not stay up indefinitely. Expiry is
+# recoverable — the panel can raise it again on demand.
+HOTSPOT_MAX_LIFETIME_SEC: Final[int] = 20 * 60
+
+# Join attempts accepted while the AP is up, before the portal starts
+# refusing. The owner needs a handful of retries for a mistyped password;
+# nobody needs hundreds.
+MAX_JOIN_ATTEMPTS: Final[int] = 10
+
+
 @dataclass(frozen=True)
 class FeedConfig:
     name: str

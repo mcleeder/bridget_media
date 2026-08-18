@@ -18,6 +18,8 @@
 #   7. Installs the passwordless-sudo allowlist the app needs
 #   8. Installs + enables the pi-media systemd service
 #   9. Installs + enables the pi-media-feeds (web feed manager) systemd service
+#  10. Generates the per-device setup-hotspot credentials, installs the
+#      captive-portal DNS drop-in and the network watchdog timer
 #
 # Manual step remaining afterwards: pair the Bluetooth speaker (instructions
 # printed at the end).
@@ -27,7 +29,7 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RUN_USER="$(whoami)"
 
-echo "=== [1/9] apt packages ==="
+echo "=== [1/10] apt packages ==="
 sudo apt-get update
 sudo apt-get install -y \
     git \
@@ -43,7 +45,7 @@ sudo apt-get install -y \
     python3-gpiozero \
     python3-lgpio
 
-echo "=== [2/9] enable SPI + I2C ==="
+echo "=== [2/10] enable SPI + I2C ==="
 sudo raspi-config nonint do_spi 0
 sudo raspi-config nonint do_i2c 0
 # Hardware access for the app user. bluetooth is needed because
@@ -51,7 +53,7 @@ sudo raspi-config nonint do_i2c 0
 # (unlike configure-speaker, which runs via passwordless sudo).
 sudo usermod -aG spi,i2c,gpio,bluetooth "$RUN_USER"
 
-echo "=== [3/9] Python runtime deps ==="
+echo "=== [3/10] Python runtime deps ==="
 # Pillow comes from apt (python3-pil) — building it with pip on a Zero W takes
 # forever. The rest are pure Python and quick. requirements.txt stays the
 # source of truth for local dev; keep this list in sync with its runtime section.
@@ -61,9 +63,10 @@ sudo pip3 install --break-system-packages \
     "APScheduler>=3.10,<4.0" \
     "Flask>=3.0" \
     "waitress>=3.0" \
-    "requests>=2.31"
+    "requests>=2.31" \
+    "segno>=1.6"
 
-echo "=== [4/9] Waveshare Touch e-Paper library ==="
+echo "=== [4/10] Waveshare Touch e-Paper library ==="
 WAVESHARE_DIR="/opt/Touch_e-Paper_HAT"
 if [[ ! -d "$WAVESHARE_DIR" ]]; then
     sudo git clone --depth 1 https://github.com/waveshareteam/Touch_e-Paper_HAT "$WAVESHARE_DIR"
@@ -83,7 +86,7 @@ python3 -c "from TP_lib import epd2in9_V2, icnt86; epd2in9_V2.EPD_2IN9_V2; icnt8
     && echo "TP_lib import OK" \
     || echo "WARNING: TP_lib import failed — check module names in $SITE_PACKAGES/TP_lib"
 
-echo "=== [5/9] MPD config ==="
+echo "=== [5/10] MPD config ==="
 if [[ -f /etc/mpd.conf && ! -f /etc/mpd.conf.orig ]]; then
     sudo cp /etc/mpd.conf /etc/mpd.conf.orig
 fi
@@ -125,7 +128,7 @@ echo "MPD now outputs to $1. Test with:  mpc add <stream-url> && mpc play"
 EOF
 sudo chmod +x /usr/local/bin/configure-speaker
 
-echo "=== [6/9] mDNS hostname ==="
+echo "=== [6/10] mDNS hostname ==="
 # config.py is the single source of truth for the name, so the screen, the
 # Host allowlist and avahi can never disagree about it.
 HOSTNAME_TARGET="$(cd "$APP_DIR" && python3 -c 'import config; print(config.MDNS_HOSTNAME)')"
@@ -141,7 +144,7 @@ else
 fi
 sudo systemctl enable --now avahi-daemon
 
-echo "=== [7/9] passwordless sudo allowlist ==="
+echo "=== [7/10] passwordless sudo allowlist ==="
 # The deploy tooling used to require NOPASSWD: ALL, which makes compromising
 # the app user the same as being root — and Phase 9 hands that user nmcli.
 # These are everything the app and deploy.sh actually need root for; each is
@@ -155,6 +158,8 @@ ${RUN_USER} ALL=(ALL) NOPASSWD: /usr/bin/nmcli
 ${RUN_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart mpd
 ${RUN_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart pi-media
 ${RUN_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart pi-media-feeds
+${RUN_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl reset-failed pi-media
+${RUN_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl reset-failed pi-media-feeds
 EOF
 # A malformed sudoers file can lock the user out of sudo entirely, so it is
 # never installed without visudo agreeing it parses.
@@ -168,17 +173,38 @@ else
 fi
 rm -f "$SUDOERS_TMP"
 
-echo "=== [8/9] pi-media service ==="
+echo "=== [8/10] pi-media service ==="
 sed "s|@USER@|$RUN_USER|; s|@APP_DIR@|$APP_DIR|" "$APP_DIR/deploy/pi-media.service" \
     | sudo tee /etc/systemd/system/pi-media.service > /dev/null
 sudo systemctl daemon-reload
 sudo systemctl enable pi-media
 
-echo "=== [9/9] pi-media-feeds (web feed manager) service ==="
+echo "=== [9/10] pi-media-feeds (web feed manager) service ==="
 sed "s|@USER@|$RUN_USER|; s|@APP_DIR@|$APP_DIR|" "$APP_DIR/deploy/pi-media-feeds.service" \
     | sudo tee /etc/systemd/system/pi-media-feeds.service > /dev/null
 sudo systemctl daemon-reload
 sudo systemctl enable pi-media-feeds
+
+echo "=== [10/10] setup hotspot + network watchdog ==="
+# Generated as the app user, not root: the panel has to read this file to draw
+# the join QR, and the watchdog runs as root so it can read it either way.
+(cd "$APP_DIR" && python3 -c "
+import config
+from network.hotspot import ensure_credentials
+credentials = ensure_credentials(config.HOTSPOT_CREDENTIALS_PATH)
+print(f'Setup hotspot SSID: {credentials.ssid}')
+")
+# Wildcard DNS for the captive portal. NetworkManager applies this only to
+# shared (hotspot) connections, never to normal client Wi-Fi.
+sudo install -d -m 0755 /etc/NetworkManager/dnsmasq-shared.d
+sudo install -m 0644 "$APP_DIR/deploy/dnsmasq-shared-portal.conf" \
+    /etc/NetworkManager/dnsmasq-shared.d/bridget-portal.conf
+for UNIT in bridget-netwatch.service bridget-netwatch.timer; do
+    sed "s|@USER@|$RUN_USER|; s|@APP_DIR@|$APP_DIR|" "$APP_DIR/deploy/$UNIT" \
+        | sudo tee "/etc/systemd/system/$UNIT" > /dev/null
+done
+sudo systemctl daemon-reload
+sudo systemctl enable --now bridget-netwatch.timer
 
 cat <<EOF
 

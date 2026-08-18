@@ -58,12 +58,18 @@ echo "Code synced."
 # happens before setup_pi.sh has run, so neither service may exist yet).
 ssh "$TARGET" '
     if systemctl list-unit-files pi-media.service --no-legend 2>/dev/null | grep -q pi-media; then
+        # reset-failed first: once a service trips its StartLimitBurst it stays
+        # failed, and a plain restart is refused with "start request repeated
+        # too quickly" — so deploying the very fix for the crash would appear
+        # to do nothing.
+        sudo systemctl reset-failed pi-media 2>/dev/null || true
         sudo systemctl restart pi-media
         echo "pi-media service restarted."
     else
         echo "pi-media service not installed yet — run: bash ~/pi_media/deploy/setup_pi.sh"
     fi
     if systemctl list-unit-files pi-media-feeds.service --no-legend 2>/dev/null | grep -q pi-media-feeds; then
+        sudo systemctl reset-failed pi-media-feeds 2>/dev/null || true
         sudo systemctl restart pi-media-feeds
         echo "pi-media-feeds service restarted."
     else

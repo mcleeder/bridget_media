@@ -41,15 +41,29 @@ class WifiNetwork(Protocol):
     def is_known(self) -> bool: ...
 
 
+class HotspotCredentials(Protocol):
+    """What a phone needs to join the setup hotspot."""
+
+    @property
+    def ssid(self) -> str: ...
+
+    @property
+    def password(self) -> str: ...
+
+
 class NetworkService(Protocol):
-    """Network queries the display layer may issue.
+    """Network operations the display layer may issue.
 
     Structurally matched by network.controller.NetworkController; main.py
-    injects it. Read-only on purpose — provisioning belongs to the feed
-    manager, so the panel can report the network but never reconfigure it.
-    Returns Sequence rather than list for the same invariance reason as
-    BluetoothService in display/bluetooth_control.py.
+    injects it. Returns Sequence rather than list for the same invariance
+    reason as BluetoothService in display/bluetooth_control.py.
+
+    Nearly read-only: the panel reports the network and can raise the setup
+    hotspot, but *joining* one stays with the feed manager. That split is
+    deliberate — the panel has no keyboard, and the recovery path it does own
+    (hand out a hotspot) is the one that works when everything else is wrong.
     """
 
     def get_status(self) -> NetworkStatus: ...
     def scan_networks(self) -> Sequence[WifiNetwork]: ...
+    def start_setup_hotspot(self) -> HotspotCredentials: ...

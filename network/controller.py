@@ -6,6 +6,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
 
+from network.hotspot import HotspotCredentials, ensure_credentials, load_credentials
+
 logger = logging.getLogger(__name__)
 
 _NMCLI: Final[str] = "nmcli"
@@ -165,6 +167,36 @@ class NetworkController:
     root for it.
     """
 
+    def __init__(self, hotspot_credentials_path: str) -> None:
+        self._hotspot_credentials_path = hotspot_credentials_path
+
+    def start_setup_hotspot(self) -> HotspotCredentials:
+        """Raise the setup hotspot, generating credentials if this is the first time.
+
+        Credential handling lives here rather than in the caller so the
+        display layer never has to know where they are stored — it asks the
+        network for a way in and gets back something it can draw.
+
+        For callers running as the app user (the panel, the web app) only:
+        see start_saved_hotspot for why root uses a different door.
+        """
+        credentials = ensure_credentials(self._hotspot_credentials_path)
+        self.start_hotspot(credentials.ssid, credentials.password)
+        return credentials
+
+    def start_saved_hotspot(self) -> HotspotCredentials:
+        """Raise the setup hotspot using credentials that already exist.
+
+        The watchdog runs as root, and a credentials file *created* by root is
+        unreadable by the app user that has to draw the QR — which would leave
+        a hotspot up that the panel cannot describe. So this path never
+        generates: a missing file means provisioning was skipped, and saying
+        so loudly is the correct outcome.
+        """
+        credentials = load_credentials(self._hotspot_credentials_path)
+        self.start_hotspot(credentials.ssid, credentials.password)
+        return credentials
+
     def get_status(self) -> NetworkStatus:
         connectivity = self._run(
             ["-t", "-f", "CONNECTIVITY", "general", "status"], _STATUS_TIMEOUT_SEC
@@ -274,6 +306,22 @@ class NetworkController:
             is_privileged=True,
         )
         logger.info("Hotspot stopped")
+
+    def reconnect_saved_network(self) -> None:
+        """Put the Wi-Fi radio back on a saved network after the AP comes down.
+
+        NetworkManager usually autoconnects on its own, but "usually" is doing
+        real work there: the AP profile owns the radio until it is released,
+        and a box that drops its hotspot without rejoining anything is exactly
+        the brick this whole phase exists to prevent. Asking explicitly costs
+        one command and removes the ambiguity.
+        """
+        device, _ = self._active_wifi_connection()
+        if device is None:
+            logger.warning("No Wi-Fi device to reconnect")
+            return
+        self._run(["device", "connect", device], _JOIN_TIMEOUT_SEC, is_privileged=True)
+        logger.info("Reconnected %s to a saved network", device)
 
     def _active_wifi_connection(self) -> tuple[str | None, str | None]:
         """(device, active connection name) for the first Wi-Fi interface."""

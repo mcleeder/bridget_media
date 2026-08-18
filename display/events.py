@@ -78,6 +78,18 @@ class BluetoothScanRequested:
 
 
 @dataclass(frozen=True)
+class HotspotRequested:
+    """Raise the setup hotspot on demand, from the panel.
+
+    The recovery path when the automatic watchdog misjudges, or when the
+    router changed and waiting out a failure timeout is the wrong
+    experience.
+    """
+
+    pass
+
+
+@dataclass(frozen=True)
 class BluetoothPairRequested:
     device: BluetoothDevice
 
@@ -100,6 +112,7 @@ Event: TypeAlias = (
     | QueueRemoveRequested
     | BluetoothDeviceSelected
     | BluetoothScanRequested
+    | HotspotRequested
     | BluetoothPairRequested
     | BluetoothForgetRequested
 )

@@ -11,6 +11,7 @@ from display.events import (
     FeedSelected,
     HomeMenuItem,
     HomeMenuSelected,
+    HotspotRequested,
     StationSelected,
 )
 
@@ -26,6 +27,7 @@ class AppState(Enum):
     RADIO_LIST = auto()
     RADIO_PLAYING = auto()
     WIFI = auto()
+    WIFI_SETUP = auto()
 
 
 def transition(state: AppState, event: Event, now_playing_origin: AppState) -> AppState:
@@ -45,9 +47,14 @@ def transition(state: AppState, event: Event, now_playing_origin: AppState) -> A
             return AppState.RADIO_LIST
         case AppState.HOME, HomeMenuSelected(item=HomeMenuItem.WIFI):
             return AppState.WIFI
-        # Read-only: the panel reports the network, the feed manager changes it.
+        # Read-only apart from raising the setup hotspot: the panel reports the
+        # network and can hand out a way in, but only the web app joins one.
         case AppState.WIFI, BackRequested():
             return AppState.HOME
+        case AppState.WIFI, HotspotRequested():
+            return AppState.WIFI_SETUP
+        case AppState.WIFI_SETUP, BackRequested():
+            return AppState.WIFI
         # Radio has its own player state rather than reusing NOW_PLAYING: a live
         # stream has no duration, position or queue, so keeping it separate is
         # what stops the episode machinery (resume, mark-played, auto-advance)

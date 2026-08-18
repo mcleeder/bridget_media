@@ -27,6 +27,7 @@ from display.events import (
     FeedSelected,
     HomeMenuItem,
     HomeMenuSelected,
+    HotspotRequested,
     ListScrolled,
     PlayPauseToggled,
     QueueRemoveRequested,
@@ -34,7 +35,7 @@ from display.events import (
     SkipRequested,
     StationSelected,
 )
-from display.network_control import NetworkService, NetworkStatus
+from display.network_control import HotspotCredentials, NetworkService, NetworkStatus
 from display.playback import AudioPlayer, PlaybackState
 from display.screens.base import Screen
 from display.screens.bluetooth_discover import BluetoothDiscoverScreen
@@ -47,6 +48,7 @@ from display.screens.queue_list import QueueListScreen
 from display.screens.radio_list import RadioListScreen
 from display.screens.radio_playing import RadioPlayingScreen
 from display.screens.wifi_list import WifiScreen
+from display.screens.wifi_setup import WifiSetupScreen
 from display.state_machine import AppState, transition
 
 logger = logging.getLogger(__name__)
@@ -125,6 +127,7 @@ class ScreenManager:
         self._bluetooth_screen: BluetoothScreen | None = None
         self._discover_screen: BluetoothDiscoverScreen | None = None
         self._wifi_screen: WifiScreen | None = None
+        self._wifi_setup_screen: WifiSetupScreen | None = None
 
         # Device discovery is the one bluetooth call run off the UI thread: it
         # takes ~15s and, unlike pairing, the user may well want to back out of
@@ -240,6 +243,8 @@ class ScreenManager:
                 self._rebuild_bluetooth_screen()
             case HomeMenuSelected(item=HomeMenuItem.WIFI):
                 self._start_status_check()
+            case HotspotRequested():
+                self._start_hotspot()
             case BluetoothDeviceSelected(device) if not device.is_connected:
                 self._show_bluetooth_connecting(device)
                 self._bluetooth_command(
@@ -275,6 +280,9 @@ class ScreenManager:
                 self._player_command(self._player.stop, "stop")
             case BackRequested() if self._state is AppState.WIFI:
                 self._abandon_status_check()
+            case BackRequested() if self._state is AppState.WIFI_SETUP:
+                # The hotspot changed what the status screen should say.
+                self._start_status_check()
             case BackRequested() if self._state is AppState.BLUETOOTH_DISCOVER:
                 # The paired list behind us is still current — nothing in this
                 # screen changes it except pairing, which doesn't exit via Back.
@@ -604,7 +612,7 @@ class ScreenManager:
         Deliberately does not draw: handle_touch redraws right after this, by
         which point _state has moved to WIFI.
         """
-        self._wifi_screen = WifiScreen(None, is_loading=True)
+        self._wifi_screen = WifiScreen(None, status_message=copy.WIFI_CHECKING)
         if self._status_check_in_progress:
             logger.info("Ignoring status check: one is already running")
             return
@@ -628,6 +636,38 @@ class ScreenManager:
             logger.exception("Could not read network status")
             status = None
         self._status_results.put((generation, status))
+
+    def _start_hotspot(self) -> None:
+        """Raise the setup hotspot, then show how to join it.
+
+        Blocking on purpose, like pairing: it takes seconds, it drops the
+        network the box is on, and a tap landing on something else halfway
+        through would be worse than a frozen screen. A status frame goes up
+        first and buffered taps are drained afterwards.
+        """
+        self._show_wifi_status(copy.WIFI_HOTSPOT_STARTING)
+        credentials: HotspotCredentials | None
+        try:
+            credentials = self._network.start_setup_hotspot()
+        except Exception:
+            # Network exception types live above this layer (see layer
+            # hierarchy). WifiSetupScreen renders the failure itself, which is
+            # what keeps the outcome out of the pure transition function.
+            logger.exception("Could not start the setup hotspot")
+            credentials = None
+
+        self._wifi_setup_screen = WifiSetupScreen(credentials)
+        self._drain_touches()
+
+    def _show_wifi_status(self, message: str) -> None:
+        """Draw a transient frame on the Wi-Fi screen before a blocking call.
+
+        Drawn directly rather than through _show(): the hotspot raise leaves
+        _state on WIFI while the screen it is heading to is WIFI_SETUP.
+        """
+        screen = WifiScreen(None, status_message=message)
+        self._wifi_screen = screen
+        self._show_screen(screen, full_refresh=False)
 
     def _abandon_status_check(self) -> None:
         """Drop an in-flight status check, so its result can't redraw a screen
@@ -713,6 +753,10 @@ class ScreenManager:
                 if self._wifi_screen is None:
                     raise DisplayError("WIFI state reached without a wifi screen")
                 return self._wifi_screen
+            case AppState.WIFI_SETUP:
+                if self._wifi_setup_screen is None:
+                    raise DisplayError("WIFI_SETUP state reached without a setup screen")
+                return self._wifi_setup_screen
             case AppState.RADIO_LIST:
                 return self._radio_screen
             case AppState.RADIO_PLAYING:

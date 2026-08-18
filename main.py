@@ -85,7 +85,7 @@ def main(simulate: bool) -> None:
 
         player = PlayerController()
         bluetooth = BluetoothController()
-        network = NetworkController()
+        network = NetworkController(config.HOTSPOT_CREDENTIALS_PATH)
 
         if not simulate:
             try:

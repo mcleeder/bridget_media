@@ -8,7 +8,7 @@ import config
 import display.copy as copy
 import display.renderer as renderer
 import display.screens.list_layout as layout
-from display.events import BackRequested, Event
+from display.events import BackRequested, Event, HotspotRequested
 from display.network_control import NetworkStatus
 
 _NAME_FONT_SIZE: Final[int] = 13
@@ -31,13 +31,22 @@ class WifiScreen:
     it (the Bluetooth row idiom), the device's address, and the name to type
     into a browser — which is the only thing on here anyone is meant to act on.
 
-    `status` is None for both "still asking" and "no NetworkManager here";
-    `is_loading` tells those two apart.
+    `status_message` takes over the whole body for transient states (checking,
+    raising a hotspot, that failing) — `status` is ignored while it is set,
+    mirroring BluetoothScreen.
     """
 
-    def __init__(self, status: NetworkStatus | None, is_loading: bool = False) -> None:
+    def __init__(
+        self,
+        status: NetworkStatus | None,
+        status_message: str | None = None,
+        is_status_error: bool = False,
+    ) -> None:
         self._status = status
-        self._is_loading = is_loading
+        self._status_message = status_message
+        self._status_icon = (
+            renderer.ICON_ERROR_OUTLINE if is_status_error else renderer.ICON_WIFI
+        )
 
     def render(self) -> Image.Image:
         image, draw = renderer.new_canvas()
@@ -47,10 +56,11 @@ class WifiScreen:
             renderer.load_text_font(layout.HEADER_FONT_SIZE),
             show_back_icon=True,
             icon_font=renderer.load_icon_font(layout.HEADER_FONT_SIZE + 4),
+            action_icon=renderer.ICON_WIFI_TETHERING,
         )
 
-        if self._is_loading:
-            layout.draw_status_message(draw, copy.WIFI_CHECKING, renderer.ICON_WIFI)
+        if self._status_message is not None:
+            layout.draw_status_message(draw, self._status_message, self._status_icon)
         elif self._status is None:
             layout.draw_status_message(draw, copy.WIFI_UNREACHABLE, renderer.ICON_ERROR_OUTLINE)
         elif self._status.ssid is None:
@@ -62,7 +72,11 @@ class WifiScreen:
 
     def handle_touch(self, x: int, y: int) -> Event | None:
         if y < layout.HEADER_HEIGHT:
-            return BackRequested()
+            # The header-right button raises the setup hotspot on demand.
+            # Available even when the box is online and happy: "my router
+            # changed" should not mean waiting out a failure timeout, and it
+            # is the only recovery if the watchdog ever misjudges.
+            return HotspotRequested() if layout.is_header_action_touch(x, y) else BackRequested()
         return None
 
     def _draw_details(self, draw: ImageDraw.ImageDraw, status: NetworkStatus) -> None:
