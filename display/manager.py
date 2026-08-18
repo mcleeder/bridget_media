@@ -34,6 +34,7 @@ from display.events import (
     SkipRequested,
     StationSelected,
 )
+from display.network_control import NetworkService, NetworkStatus
 from display.playback import AudioPlayer, PlaybackState
 from display.screens.base import Screen
 from display.screens.bluetooth_discover import BluetoothDiscoverScreen
@@ -45,6 +46,7 @@ from display.screens.podcast_list import PodcastListScreen
 from display.screens.queue_list import QueueListScreen
 from display.screens.radio_list import RadioListScreen
 from display.screens.radio_playing import RadioPlayingScreen
+from display.screens.wifi_list import WifiScreen
 from display.state_machine import AppState, transition
 
 logger = logging.getLogger(__name__)
@@ -85,6 +87,7 @@ class ScreenManager:
         queue_repository: QueueRepository,
         player: AudioPlayer,
         bluetooth: BluetoothService,
+        network: NetworkService,
         stations: Sequence[Station],
     ) -> None:
         self._driver = driver
@@ -93,6 +96,7 @@ class ScreenManager:
         self._queue_repository = queue_repository
         self._player = player
         self._bluetooth = bluetooth
+        self._network = network
 
         self._state: AppState = AppState.HOME
         self._selected_feed: Feed | None = None
@@ -120,6 +124,7 @@ class ScreenManager:
         self._radio_playing_screen: RadioPlayingScreen | None = None
         self._bluetooth_screen: BluetoothScreen | None = None
         self._discover_screen: BluetoothDiscoverScreen | None = None
+        self._wifi_screen: WifiScreen | None = None
 
         # Device discovery is the one bluetooth call run off the UI thread: it
         # takes ~15s and, unlike pairing, the user may well want to back out of
@@ -133,6 +138,15 @@ class ScreenManager:
         # Bumped whenever a scan is abandoned, so a late result is discarded
         # instead of redrawing a screen the user already left.
         self._scan_generation: int = 0
+
+        # The network status check qualifies for a background thread on the
+        # same terms as the scan: it only shells out to nmcli, touches no
+        # sqlite connection and never draws.
+        self._status_results: queue.Queue[tuple[int, NetworkStatus | None]] = queue.Queue(
+            maxsize=1
+        )
+        self._status_check_in_progress: bool = False
+        self._status_generation: int = 0
 
         self._show(full_refresh=True)
 
@@ -224,6 +238,8 @@ class ScreenManager:
                 self._queue_screen = QueueListScreen(self._queue_repository.get_entries())
             case HomeMenuSelected(item=HomeMenuItem.BLUETOOTH):
                 self._rebuild_bluetooth_screen()
+            case HomeMenuSelected(item=HomeMenuItem.WIFI):
+                self._start_status_check()
             case BluetoothDeviceSelected(device) if not device.is_connected:
                 self._show_bluetooth_connecting(device)
                 self._bluetooth_command(
@@ -257,6 +273,8 @@ class ScreenManager:
             case BackRequested() if self._state is AppState.RADIO_PLAYING:
                 self._playing_station = None
                 self._player_command(self._player.stop, "stop")
+            case BackRequested() if self._state is AppState.WIFI:
+                self._abandon_status_check()
             case BackRequested() if self._state is AppState.BLUETOOTH_DISCOVER:
                 # The paired list behind us is still current — nothing in this
                 # screen changes it except pairing, which doesn't exit via Back.
@@ -548,7 +566,11 @@ class ScreenManager:
         self._scan_results.put((generation, devices))
 
     def poll_background_work(self) -> None:
-        """Collect a finished scan. Called every tick from the main loop."""
+        """Collect finished background work. Called every tick from the main loop."""
+        self._poll_scan_result()
+        self._poll_status_result()
+
+    def _poll_scan_result(self) -> None:
         try:
             generation, devices = self._scan_results.get_nowait()
         except queue.Empty:
@@ -561,6 +583,58 @@ class ScreenManager:
         self._rebuild_discover_screen(devices)
         if self._state is AppState.BLUETOOTH_DISCOVER:
             self._show(full_refresh=False)
+
+    def _poll_status_result(self) -> None:
+        try:
+            generation, status = self._status_results.get_nowait()
+        except queue.Empty:
+            return
+
+        self._status_check_in_progress = False
+        if generation != self._status_generation:
+            logger.info("Discarding stale network status result")
+            return
+        self._wifi_screen = WifiScreen(status)
+        if self._state is AppState.WIFI:
+            self._show(full_refresh=False)
+
+    def _start_status_check(self) -> None:
+        """Read the network status in the background and show the waiting frame.
+
+        Deliberately does not draw: handle_touch redraws right after this, by
+        which point _state has moved to WIFI.
+        """
+        self._wifi_screen = WifiScreen(None, is_loading=True)
+        if self._status_check_in_progress:
+            logger.info("Ignoring status check: one is already running")
+            return
+
+        self._status_check_in_progress = True
+        generation = self._status_generation
+        # Daemon so Ctrl-C never waits out an nmcli timeout.
+        threading.Thread(
+            target=self._run_status_check, args=(generation,), name="wifi-status", daemon=True
+        ).start()
+
+    def _run_status_check(self, generation: int) -> None:
+        """Status worker. Runs off the UI thread — must not draw or touch the DB."""
+        status: NetworkStatus | None
+        try:
+            status = self._network.get_status()
+        except Exception:
+            # Network exception types live above this layer (see layer
+            # hierarchy); None renders as the on-screen unreachable state,
+            # which is also what Windows shows — there is no nmcli there.
+            logger.exception("Could not read network status")
+            status = None
+        self._status_results.put((generation, status))
+
+    def _abandon_status_check(self) -> None:
+        """Drop an in-flight status check, so its result can't redraw a screen
+        the user has already left."""
+        if self._status_check_in_progress:
+            self._status_generation += 1
+            self._status_check_in_progress = False
 
     def _abandon_scan(self) -> None:
         """Stop caring about an in-flight scan. The worker still finishes; its
@@ -635,6 +709,10 @@ class ScreenManager:
                 if self._discover_screen is None:
                     raise DisplayError("BLUETOOTH_DISCOVER state reached without a screen")
                 return self._discover_screen
+            case AppState.WIFI:
+                if self._wifi_screen is None:
+                    raise DisplayError("WIFI state reached without a wifi screen")
+                return self._wifi_screen
             case AppState.RADIO_LIST:
                 return self._radio_screen
             case AppState.RADIO_PLAYING:

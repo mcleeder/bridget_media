@@ -15,6 +15,7 @@ from display.drivers.base import DisplayDriver
 from display.errors import DisplayError
 from display.manager import ScreenManager
 from feeds import FeedFetcher, seed_default_feeds
+from network import NetworkController
 from player import PlayerController, PlayerError
 
 logging.basicConfig(
@@ -84,6 +85,7 @@ def main(simulate: bool) -> None:
 
         player = PlayerController()
         bluetooth = BluetoothController()
+        network = NetworkController()
 
         if not simulate:
             try:
@@ -100,6 +102,7 @@ def main(simulate: bool) -> None:
             queue_repository=queue_repo,
             player=player,
             bluetooth=bluetooth,
+            network=network,
             stations=config.STATIONS,
         )
 
@@ -112,7 +115,8 @@ def main(simulate: bool) -> None:
                 for x, y in driver.read_touch():
                     manager.handle_touch(x, y)
 
-                # Picks up a finished Bluetooth device scan (runs on its own thread)
+                # Picks up finished background work — the Bluetooth device scan
+                # and the network status check, each on its own thread
                 manager.poll_background_work()
 
                 if fetch_completed.is_set():

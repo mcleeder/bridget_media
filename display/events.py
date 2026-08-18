@@ -14,6 +14,7 @@ class HomeMenuItem(Enum):
     PODCASTS = auto()
     QUEUE = auto()
     RADIO = auto()
+    WIFI = auto()
 
 
 @dataclass(frozen=True)

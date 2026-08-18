@@ -28,6 +28,7 @@ HEADER_QUEUE: Final[str] = "Next"
 HEADER_BLUETOOTH: Final[str] = "Bluetooth"
 HEADER_ADD_DEVICE: Final[str] = "Add device"
 HEADER_RADIO: Final[str] = "Radio"
+HEADER_WIFI: Final[str] = "Wi-Fi"
 
 # --- Row labels ---------------------------------------------------------
 
@@ -35,6 +36,7 @@ HOME_ITEM_BLUETOOTH: Final[str] = "Bluetooth"
 HOME_ITEM_PODCASTS: Final[str] = "Podcasts"
 HOME_ITEM_QUEUE: Final[str] = "Next"
 HOME_ITEM_RADIO: Final[str] = "Radio"
+HOME_ITEM_WIFI: Final[str] = "Wi-Fi"
 
 # Shown under the station name on the radio player. These streams carry no
 # track metadata, so "live" is genuinely all the device knows.
@@ -59,6 +61,21 @@ BLUETOOTH_NOBODY_FOUND: Final[str] = (
 BLUETOOTH_PAIRING: Final[str] = "Making introductions with {name}…"
 BLUETOOTH_CONNECTING: Final[str] = "Getting cozy with {name}…"
 BLUETOOTH_PAIRING_FAILED: Final[str] = "{name} left you on read. Try deploy/pair_speaker.sh."
+
+# Wi-Fi status line labels sit on a 35px row under the network name, so they
+# stay as plain and short as the Bluetooth ones.
+WIFI_CONNECTED: Final[str] = "Connected"
+WIFI_NO_INTERNET: Final[str] = "No internet"
+WIFI_HOTSPOT_ACTIVE: Final[str] = "Setup hotspot"
+WIFI_NO_ADDRESS: Final[str] = "No address yet"
+
+WIFI_CHECKING: Final[str] = "Asking around about the network…"
+WIFI_UNREACHABLE: Final[str] = (
+    "This box has no idea what a network is. Nothing to report."
+)
+WIFI_OFFLINE: Final[str] = (
+    "Off the grid entirely. No Wi-Fi, no gossip, no downloads."
+)
 
 QUEUE_EMPTY: Final[str] = "Your evening is wide open."
 NO_STATIONS: Final[str] = "The airwaves are empty. Someone cut the STATIONS list."

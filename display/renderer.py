@@ -36,6 +36,11 @@ ICON_LINK_OFF: Final[str] = "\ue16f"
 ICON_ADD: Final[str] = "\ue145"
 ICON_RADIO: Final[str] = "\ue03e"
 ICON_GRAPHIC_EQ: Final[str] = "\ue1b8"
+ICON_WIFI: Final[str] = "\ue63e"
+ICON_WIFI_OFF: Final[str] = "\ue648"
+ICON_WIFI_TETHERING: Final[str] = "\ue1e2"
+ICON_LAN: Final[str] = "\ueb2f"
+ICON_PUBLIC: Final[str] = "\ue80b"
 
 # A glyph pair renders as one text run, which draw_icon_centered centres as a
 # whole \u2014 "+" ahead of the search icon, so the button reads as "add a device".

@@ -14,7 +14,16 @@ DB_PATH: Final[str] = "pi_media.db"
 
 FEED_REFRESH_INTERVAL_HOURS: Final[int] = 4
 
-FEED_MANAGER_PORT: Final[int] = 8000
+# The device answers to <MDNS_HOSTNAME>.local via avahi (set by setup_pi.sh).
+# "Open bridget.local" is a sentence a non-engineer can follow; an IP is not.
+MDNS_HOSTNAME: Final[str] = "bridget"
+FEED_MANAGER_HOST: Final[str] = f"{MDNS_HOSTNAME}.local"
+
+# Port 80 so the URL carries no port suffix, and because the Phase 10 captive
+# portal has to answer on it anyway. The service gets CAP_NET_BIND_SERVICE
+# rather than running as root. Local dev overrides it: python -m
+# feed_manager.app --port 8000 (which is what the Vite proxy expects).
+FEED_MANAGER_PORT: Final[int] = 80
 
 
 @dataclass(frozen=True)

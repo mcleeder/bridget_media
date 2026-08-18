@@ -14,8 +14,10 @@
 #   4. Installs the Waveshare Touch e-Paper library (TP_lib) plus a
 #      waveshare_epd shim package matching our imports
 #   5. Installs /etc/mpd.conf (Bluetooth + aux outputs; speaker MAC filled in later)
-#   6. Installs + enables the pi-media systemd service
-#   7. Installs + enables the pi-media-feeds (web feed manager) systemd service
+#   6. Sets the mDNS hostname so the box answers to <MDNS_HOSTNAME>.local
+#   7. Installs the passwordless-sudo allowlist the app needs
+#   8. Installs + enables the pi-media systemd service
+#   9. Installs + enables the pi-media-feeds (web feed manager) systemd service
 #
 # Manual step remaining afterwards: pair the Bluetooth speaker (instructions
 # printed at the end).
@@ -25,12 +27,14 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RUN_USER="$(whoami)"
 
-echo "=== [1/6] apt packages ==="
+echo "=== [1/9] apt packages ==="
 sudo apt-get update
 sudo apt-get install -y \
     git \
     mpd mpc \
     bluez bluez-alsa-utils \
+    avahi-daemon \
+    network-manager \
     python3-pip \
     python3-pil \
     python3-spidev \
@@ -39,7 +43,7 @@ sudo apt-get install -y \
     python3-gpiozero \
     python3-lgpio
 
-echo "=== [2/6] enable SPI + I2C ==="
+echo "=== [2/9] enable SPI + I2C ==="
 sudo raspi-config nonint do_spi 0
 sudo raspi-config nonint do_i2c 0
 # Hardware access for the app user. bluetooth is needed because
@@ -47,7 +51,7 @@ sudo raspi-config nonint do_i2c 0
 # (unlike configure-speaker, which runs via passwordless sudo).
 sudo usermod -aG spi,i2c,gpio,bluetooth "$RUN_USER"
 
-echo "=== [3/6] Python runtime deps ==="
+echo "=== [3/9] Python runtime deps ==="
 # Pillow comes from apt (python3-pil) — building it with pip on a Zero W takes
 # forever. The rest are pure Python and quick. requirements.txt stays the
 # source of truth for local dev; keep this list in sync with its runtime section.
@@ -56,9 +60,10 @@ sudo pip3 install --break-system-packages \
     "python-mpd2>=3.0" \
     "APScheduler>=3.10,<4.0" \
     "Flask>=3.0" \
+    "waitress>=3.0" \
     "requests>=2.31"
 
-echo "=== [4/6] Waveshare Touch e-Paper library ==="
+echo "=== [4/9] Waveshare Touch e-Paper library ==="
 WAVESHARE_DIR="/opt/Touch_e-Paper_HAT"
 if [[ ! -d "$WAVESHARE_DIR" ]]; then
     sudo git clone --depth 1 https://github.com/waveshareteam/Touch_e-Paper_HAT "$WAVESHARE_DIR"
@@ -78,7 +83,7 @@ python3 -c "from TP_lib import epd2in9_V2, icnt86; epd2in9_V2.EPD_2IN9_V2; icnt8
     && echo "TP_lib import OK" \
     || echo "WARNING: TP_lib import failed — check module names in $SITE_PACKAGES/TP_lib"
 
-echo "=== [5/6] MPD config ==="
+echo "=== [5/9] MPD config ==="
 if [[ -f /etc/mpd.conf && ! -f /etc/mpd.conf.orig ]]; then
     sudo cp /etc/mpd.conf /etc/mpd.conf.orig
 fi
@@ -120,13 +125,56 @@ echo "MPD now outputs to $1. Test with:  mpc add <stream-url> && mpc play"
 EOF
 sudo chmod +x /usr/local/bin/configure-speaker
 
-echo "=== [6/7] pi-media service ==="
+echo "=== [6/9] mDNS hostname ==="
+# config.py is the single source of truth for the name, so the screen, the
+# Host allowlist and avahi can never disagree about it.
+HOSTNAME_TARGET="$(cd "$APP_DIR" && python3 -c 'import config; print(config.MDNS_HOSTNAME)')"
+CURRENT_HOSTNAME="$(hostname)"
+if [[ "$CURRENT_HOSTNAME" != "$HOSTNAME_TARGET" ]]; then
+    sudo hostnamectl set-hostname "$HOSTNAME_TARGET"
+    # /etc/hosts still maps the old name to 127.0.1.1; leaving it stale makes
+    # sudo slow to resolve the host on every call.
+    sudo sed -i "s/\b${CURRENT_HOSTNAME}\b/${HOSTNAME_TARGET}/g" /etc/hosts
+    HOSTNAME_CHANGED="yes"
+else
+    HOSTNAME_CHANGED=""
+fi
+sudo systemctl enable --now avahi-daemon
+
+echo "=== [7/9] passwordless sudo allowlist ==="
+# The deploy tooling used to require NOPASSWD: ALL, which makes compromising
+# the app user the same as being root — and Phase 9 hands that user nmcli.
+# These are everything the app and deploy.sh actually need root for; each is
+# matched with its arguments, so `nmcli` is the only open-ended entry.
+SUDOERS_TMP="$(mktemp)"
+cat > "$SUDOERS_TMP" <<EOF
+# Installed by deploy/setup_pi.sh — do not edit by hand.
+${RUN_USER} ALL=(ALL) NOPASSWD: /usr/sbin/rfkill unblock bluetooth
+${RUN_USER} ALL=(ALL) NOPASSWD: /usr/local/bin/configure-speaker
+${RUN_USER} ALL=(ALL) NOPASSWD: /usr/bin/nmcli
+${RUN_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart mpd
+${RUN_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart pi-media
+${RUN_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart pi-media-feeds
+EOF
+# A malformed sudoers file can lock the user out of sudo entirely, so it is
+# never installed without visudo agreeing it parses.
+if sudo visudo -cf "$SUDOERS_TMP" > /dev/null; then
+    sudo install -m 0440 -o root -g root "$SUDOERS_TMP" /etc/sudoers.d/020_pi-media
+    echo "Installed /etc/sudoers.d/020_pi-media"
+else
+    echo "ERROR: generated sudoers file failed visudo -c; not installing" >&2
+    rm -f "$SUDOERS_TMP"
+    exit 1
+fi
+rm -f "$SUDOERS_TMP"
+
+echo "=== [8/9] pi-media service ==="
 sed "s|@USER@|$RUN_USER|; s|@APP_DIR@|$APP_DIR|" "$APP_DIR/deploy/pi-media.service" \
     | sudo tee /etc/systemd/system/pi-media.service > /dev/null
 sudo systemctl daemon-reload
 sudo systemctl enable pi-media
 
-echo "=== [7/7] pi-media-feeds (web feed manager) service ==="
+echo "=== [9/9] pi-media-feeds (web feed manager) service ==="
 sed "s|@USER@|$RUN_USER|; s|@APP_DIR@|$APP_DIR|" "$APP_DIR/deploy/pi-media-feeds.service" \
     | sudo tee /etc/systemd/system/pi-media-feeds.service > /dev/null
 sudo systemctl daemon-reload
@@ -161,7 +209,27 @@ Provisioning done. Two manual steps remain:
 After reboot:
   - hardware smoke test:   cd $APP_DIR && python3 test_display.py
   - app logs:              journalctl -u pi-media -f
-  - feed manager:          http://$(hostname).local:8000
+  - feed manager:          http://${HOSTNAME_TARGET}.local
   - feed manager logs:     journalctl -u pi-media-feeds -f
+
+Now that the sudo allowlist is in place, the blanket grant can go:
+
+     sudo rm -f /etc/sudoers.d/010_${RUN_USER}-nopasswd
+
+  (Re-running this script afterwards will ask for a password — it is the
+   only thing here that still needs broad sudo.)
 ============================================================
 EOF
+
+if [[ -n "$HOSTNAME_CHANGED" ]]; then
+cat <<EOF
+!!! HOSTNAME CHANGED: ${CURRENT_HOSTNAME} -> ${HOSTNAME_TARGET}
+
+    The deploy tooling still points at the old name. On your workstation:
+      - set PI_NETWORK_NAME=${HOSTNAME_TARGET} in .env
+      - clear the stale host key:  ssh-keygen -R ${CURRENT_HOSTNAME}.local
+
+    Until then, deploy with:  PI_HOST=${CURRENT_HOSTNAME}.local bash deploy/deploy.sh
+============================================================
+EOF
+fi

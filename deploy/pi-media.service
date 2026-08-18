@@ -21,5 +21,12 @@ ExecStart=/usr/bin/python3 main.py
 Restart=on-failure
 RestartSec=5
 
+# Lighter-touch hardening than pi-media-feeds gets: this unit drives SPI, I2C
+# and GPIO, and shells out to setuid sudo for rfkill and configure-speaker, so
+# NoNewPrivileges and ProtectSystem=strict would both break it. /usr, /boot and
+# /etc read-only costs it nothing — it only writes the database in @APP_DIR@.
+ProtectSystem=full
+PrivateTmp=yes
+
 [Install]
 WantedBy=multi-user.target

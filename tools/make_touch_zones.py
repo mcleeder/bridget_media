@@ -35,6 +35,7 @@ from display.screens.podcast_list import PodcastListScreen  # noqa: E402
 from display.screens.queue_list import QueueListScreen  # noqa: E402
 from display.screens.radio_list import RadioListScreen  # noqa: E402
 from display.screens.radio_playing import RadioPlayingScreen  # noqa: E402
+from display.screens.wifi_list import WifiScreen  # noqa: E402
 
 SCALE: Final[int] = 3
 MARGIN: Final[int] = 20
@@ -166,13 +167,22 @@ def build_screens() -> list[tuple[str, Image.Image, list[Zone]]]:
     player: AudioPlayer = Player()
     stations = [Station(name=n, stream_url="x")
                 for n in ["FIP", "FIP Rock", "FIP Jazz", "FIP Groove"]]
+
+    @dataclass(frozen=True)
+    class Status:
+        is_online: bool = True
+        ssid: str | None = "Ravenwood"
+        ip_address: str | None = "192.168.1.50"
+        is_hotspot_active: bool = False
+
+    status = Status()
     header_no_action = layout.HEADER_ACTION_X
     button_w = DISPLAY_WIDTH // 4
     controls_top = 95
 
     return [
         (
-            "Home — root menu (no back button; scrolls, 4 items)",
+            "Home — root menu (no back button; scrolls, 5 items)",
             HomeScreen().render(),
             [Zone((0, 0, DISPLAY_WIDTH, layout.HEADER_HEIGHT), "no action", DEAD, show_aim=False),
              *row_zones("open", ROW, layout.SIDEBAR_X), *sidebar_zones()],
@@ -210,6 +220,13 @@ def build_screens() -> list[tuple[str, Image.Image, list[Zone]]]:
              Zone((layout.HEADER_ACTION_X, 0, DISPLAY_WIDTH, layout.HEADER_HEIGHT),
                   "RESCAN", ADD),
              *row_zones("pair", ROW, layout.SIDEBAR_X), *sidebar_zones()],
+        ),
+        (
+            "Wi-Fi — read-only status; the header is the only tap target",
+            WifiScreen(status).render(),
+            [header_back(),
+             Zone((0, layout.HEADER_HEIGHT, DISPLAY_WIDTH, DISPLAY_HEIGHT),
+                  "no action", DEAD, show_aim=False)],
         ),
         (
             "Radio — whole row tunes in (live streams, no queue or action zone)",

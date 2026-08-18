@@ -25,6 +25,7 @@ class AppState(Enum):
     BLUETOOTH_DISCOVER = auto()
     RADIO_LIST = auto()
     RADIO_PLAYING = auto()
+    WIFI = auto()
 
 
 def transition(state: AppState, event: Event, now_playing_origin: AppState) -> AppState:
@@ -42,6 +43,11 @@ def transition(state: AppState, event: Event, now_playing_origin: AppState) -> A
             return AppState.BLUETOOTH
         case AppState.HOME, HomeMenuSelected(item=HomeMenuItem.RADIO):
             return AppState.RADIO_LIST
+        case AppState.HOME, HomeMenuSelected(item=HomeMenuItem.WIFI):
+            return AppState.WIFI
+        # Read-only: the panel reports the network, the feed manager changes it.
+        case AppState.WIFI, BackRequested():
+            return AppState.HOME
         # Radio has its own player state rather than reusing NOW_PLAYING: a live
         # stream has no duration, position or queue, so keeping it separate is
         # what stops the episode machinery (resume, mark-played, auto-advance)

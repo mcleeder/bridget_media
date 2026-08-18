@@ -16,5 +16,21 @@ ExecStart=/usr/bin/python3 -m feed_manager.app
 Restart=on-failure
 RestartSec=5
 
+# Port 80 (config.FEED_MANAGER_PORT) without running the app as root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Read-only everywhere except the app directory, which holds the database.
+ProtectSystem=strict
+ReadWritePaths=@APP_DIR@
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+# Deliberately NOT NoNewPrivileges=yes: sudo is setuid, and Phase 10 provisions
+# Wi-Fi from here via `sudo -n nmcli`. Turning it on would break that with a
+# confusing "sudo must be setuid root" rather than a network error.
+# ProtectHome is likewise off — @APP_DIR@ lives under /home.
+
 [Install]
 WantedBy=multi-user.target

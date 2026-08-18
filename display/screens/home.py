@@ -15,13 +15,15 @@ _ROW_ICON_SIZE: Final[int] = 18
 _ICON_ZONE_WIDTH: Final[int] = 40
 _CHEVRON_ZONE_WIDTH: Final[int] = 30
 
-# Ordered so the three listening destinations occupy the visible rows and
-# Bluetooth — the one you touch when setting the device up, not when using
-# it — is the item that falls below the fold.
+# Ordered so the three listening destinations occupy the visible rows and the
+# setup screens — the ones you touch when setting the device up, not when
+# using it — are what falls below the fold. Wi-Fi leads that pair: when both
+# are wrong, the network is the one to fix first.
 _MENU_ROWS: Final[list[tuple[str, str, HomeMenuItem]]] = [
     (copy.HOME_ITEM_PODCASTS, renderer.ICON_PODCASTS, HomeMenuItem.PODCASTS),
     (copy.HOME_ITEM_RADIO, renderer.ICON_RADIO, HomeMenuItem.RADIO),
     (copy.HOME_ITEM_QUEUE, renderer.ICON_QUEUE_MUSIC, HomeMenuItem.QUEUE),
+    (copy.HOME_ITEM_WIFI, renderer.ICON_WIFI, HomeMenuItem.WIFI),
     (copy.HOME_ITEM_BLUETOOTH, renderer.ICON_BLUETOOTH, HomeMenuItem.BLUETOOTH),
 ]
 
