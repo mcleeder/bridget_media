@@ -31,6 +31,10 @@ FEED_MANAGER_PORT: Final[int] = 80
 # draw the join QR), the watchdog (to raise the AP) and nothing else.
 HOTSPOT_CREDENTIALS_PATH: Final[str] = "hotspot_credentials.json"
 NETWORK_WATCHDOG_STATE_PATH: Final[str] = "network_watchdog_state.json"
+# The last scan taken while the radio was free. The Pi has one Wi-Fi radio,
+# so the portal cannot scan while it is hosting the setup AP — the list is
+# captured just before the hotspot goes up and served from here.
+NETWORK_SCAN_CACHE_PATH: Final[str] = "network_scan_cache.json"
 
 # NetworkManager's shared mode always puts the Pi here, handing clients the
 # rest of the /24. The subnet is how the web app tells a phone sitting on the

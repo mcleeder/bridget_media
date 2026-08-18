@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 api_blueprint = Blueprint("api", __name__)
 
 _itunes_client = ItunesSearchClient()
-_network = NetworkController(config.HOTSPOT_CREDENTIALS_PATH)
+_network = NetworkController(config.HOTSPOT_CREDENTIALS_PATH, config.NETWORK_SCAN_CACHE_PATH)
 
 # Join attempts since the process started. Reset when the hotspot drops, which
 # in practice means when the watchdog restarts networking — good enough for a
@@ -131,7 +131,11 @@ def network_scan() -> tuple[Response, int] | Response:
     refusal = _require_hotspot()
     if refusal is not None:
         return refusal
-    networks = _network.scan_networks()
+    # Deliberately the cached list, not a live scan: this endpoint is only
+    # reachable while the hotspot is up, and the single radio cannot host an
+    # AP and scan at the same time. The cache was taken moments before the AP
+    # went up. See NetworkController._cache_scan_then_start.
+    networks = _network.cached_networks()
     return jsonify(
         [
             {
@@ -190,7 +194,7 @@ def network_forget() -> tuple[Response, int]:
 
 def _join_network(ssid: str, password: str, is_hidden: bool) -> None:
     try:
-        _network.join_network(ssid, password, is_hidden)
+        _network.join_network_from_hotspot(ssid, password, is_hidden)
     except NetworkError:
         # Nothing to answer to — the caller's connection died with the AP.
         # The panel is where the outcome shows up, so this only needs to

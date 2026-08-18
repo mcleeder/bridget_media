@@ -144,7 +144,9 @@ def main() -> None:
     )
     state = _load_state(config.NETWORK_WATCHDOG_STATE_PATH)
     try:
-        controller = NetworkController(config.HOTSPOT_CREDENTIALS_PATH)
+        controller = NetworkController(
+            config.HOTSPOT_CREDENTIALS_PATH, config.NETWORK_SCAN_CACHE_PATH
+        )
         next_state = run_once(controller, state, time.time())
     except (NetworkError, HotspotCredentialsError):
         # Exiting non-zero every minute would fill the journal and mark the

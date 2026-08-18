@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Final
 
 from network.hotspot import HotspotCredentials, ensure_credentials, load_credentials
@@ -150,6 +152,38 @@ def _parse_networks(output: str, known_ssids: frozenset[str]) -> list[WifiNetwor
     return sorted(strongest.values(), key=lambda network: network.signal, reverse=True)
 
 
+def _write_scan_cache(path: str, networks: Sequence[WifiNetwork]) -> None:
+    try:
+        Path(path).write_text(
+            json.dumps([asdict(network) for network in networks]), encoding="utf-8"
+        )
+    except OSError:
+        # A portal with an empty list still has manual SSID entry; failing the
+        # hotspot over a cache write would be far worse.
+        logger.warning("Could not write the scan cache to %s", path, exc_info=True)
+
+
+def _read_scan_cache(path: str) -> list[WifiNetwork]:
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    networks = []
+    for entry in raw:
+        try:
+            networks.append(
+                WifiNetwork(
+                    ssid=str(entry["ssid"]),
+                    signal=int(entry["signal"]),
+                    is_secured=bool(entry["is_secured"]),
+                    is_known=bool(entry["is_known"]),
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return networks
+
+
 def _redact(text: str, secrets: Sequence[str]) -> str:
     for secret in secrets:
         if secret:
@@ -167,8 +201,33 @@ class NetworkController:
     root for it.
     """
 
-    def __init__(self, hotspot_credentials_path: str) -> None:
+    def __init__(self, hotspot_credentials_path: str, scan_cache_path: str) -> None:
         self._hotspot_credentials_path = hotspot_credentials_path
+        self._scan_cache_path = scan_cache_path
+
+    def join_network_from_hotspot(
+        self, ssid: str, password: str, is_hidden: bool = False
+    ) -> None:
+        """Drop the setup AP, then join the target network.
+
+        The Pi has one radio. It cannot host an access point and associate
+        with someone's router at the same time, so joining straight from the
+        portal fails with "No network with SSID ... found" — the AP owns the
+        radio, no scan list exists, and nmcli has nothing to match against.
+
+        If the join then fails the box is left offline with no AP, which
+        sounds alarming and is actually the recovery path working: the
+        watchdog sees consecutive offline checks and raises the hotspot again
+        a few minutes later, so a mistyped password costs a short wait rather
+        than a stranded device.
+        """
+        try:
+            self.stop_hotspot()
+        except NetworkError:
+            # Already down, or never up. Either way the radio is free, which
+            # is all this step was for.
+            logger.info("No hotspot to drop before joining", exc_info=True)
+        self.join_network(ssid, password, is_hidden)
 
     def start_setup_hotspot(self) -> HotspotCredentials:
         """Raise the setup hotspot, generating credentials if this is the first time.
@@ -181,7 +240,7 @@ class NetworkController:
         see start_saved_hotspot for why root uses a different door.
         """
         credentials = ensure_credentials(self._hotspot_credentials_path)
-        self.start_hotspot(credentials.ssid, credentials.password)
+        self._cache_scan_then_start(credentials)
         return credentials
 
     def start_saved_hotspot(self) -> HotspotCredentials:
@@ -194,8 +253,33 @@ class NetworkController:
         so loudly is the correct outcome.
         """
         credentials = load_credentials(self._hotspot_credentials_path)
-        self.start_hotspot(credentials.ssid, credentials.password)
+        self._cache_scan_then_start(credentials)
         return credentials
+
+    def _cache_scan_then_start(self, credentials: HotspotCredentials) -> None:
+        """Scan the air *before* taking the radio, then raise the AP.
+
+        One radio means the portal cannot scan while the hotspot is up — the
+        whole point of the portal is choosing a network, so the list has to be
+        captured in the last moment the radio is free and handed over.
+        A failed scan is not worth abandoning the hotspot for: without the AP
+        there is no way in at all, so this degrades to an empty list and the
+        portal's manual-SSID entry.
+        """
+        try:
+            networks = self.scan_networks()
+        except NetworkError:
+            logger.warning("Could not scan before raising the hotspot", exc_info=True)
+            networks = []
+        self.start_hotspot(credentials.ssid, credentials.password)
+        _write_scan_cache(self._scan_cache_path, networks)
+
+    def cached_networks(self) -> list[WifiNetwork]:
+        """The last scan taken while the radio was free.
+
+        What the portal serves: see _cache_scan_then_start.
+        """
+        return _read_scan_cache(self._scan_cache_path)
 
     def get_status(self) -> NetworkStatus:
         connectivity = self._run(
@@ -297,6 +381,16 @@ class NetworkController:
             secrets=(password,),
             is_privileged=True,
         )
+        # NetworkManager creates the profile with autoconnect on, which turns a
+        # temporary setup AP into the device's permanent identity: it wins the
+        # race against the home network on boot, and `device connect` picks it
+        # instead of a saved network — so the box answers only to its own
+        # hotspot forever and never rejoins anything. Off, always.
+        self._run(
+            ["connection", "modify", HOTSPOT_CONNECTION_NAME, "connection.autoconnect", "no"],
+            _HOTSPOT_TIMEOUT_SEC,
+            is_privileged=True,
+        )
         logger.info("Hotspot %s is up", ssid)
 
     def stop_hotspot(self) -> None:
@@ -310,18 +404,25 @@ class NetworkController:
     def reconnect_saved_network(self) -> None:
         """Put the Wi-Fi radio back on a saved network after the AP comes down.
 
-        NetworkManager usually autoconnects on its own, but "usually" is doing
-        real work there: the AP profile owns the radio until it is released,
-        and a box that drops its hotspot without rejoining anything is exactly
-        the brick this whole phase exists to prevent. Asking explicitly costs
-        one command and removes the ambiguity.
+        Names the target profile explicitly rather than running `device
+        connect`, which picks by autoconnect priority and will happily choose
+        the setup hotspot — leaving the box talking to itself. A box that
+        drops its AP without rejoining anything is exactly the brick this
+        phase exists to prevent, so this is worth being deterministic about.
         """
-        device, _ = self._active_wifi_connection()
-        if device is None:
-            logger.warning("No Wi-Fi device to reconnect")
+        candidates = [name for name in self._known_ssids() if name != HOTSPOT_CONNECTION_NAME]
+        if not candidates:
+            logger.warning("No saved Wi-Fi network to fall back to")
             return
-        self._run(["device", "connect", device], _JOIN_TIMEOUT_SEC, is_privileged=True)
-        logger.info("Reconnected %s to a saved network", device)
+        for name in candidates:
+            try:
+                self._run(["connection", "up", "id", name], _JOIN_TIMEOUT_SEC, is_privileged=True)
+            except NetworkError:
+                logger.warning("Could not bring up saved network %s", name, exc_info=True)
+                continue
+            logger.info("Reconnected to saved network %s", name)
+            return
+        logger.warning("None of the %d saved networks came up", len(candidates))
 
     def _active_wifi_connection(self) -> tuple[str | None, str | None]:
         """(device, active connection name) for the first Wi-Fi interface."""
