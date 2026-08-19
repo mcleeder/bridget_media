@@ -23,9 +23,14 @@ RestartSec=5
 
 # Lighter-touch hardening than pi-media-feeds gets: this unit drives SPI, I2C
 # and GPIO, and shells out to setuid sudo for rfkill and configure-speaker, so
-# NoNewPrivileges and ProtectSystem=strict would both break it. /usr, /boot and
-# /etc read-only costs it nothing — it only writes the database in @APP_DIR@.
+# NoNewPrivileges and ProtectSystem=strict would both break it.
 ProtectSystem=full
+# ProtectSystem=full mounts /etc read-only for this unit *and every child it
+# spawns* — sudo included. Switching speakers therefore failed silently at the
+# configure-speaker step (GNU sed exits 4 on the I/O error), leaving MPD
+# pointed at the previous device: the speaker connected audibly and then
+# played nothing. This is the one file the app legitimately rewrites.
+ReadWritePaths=/etc/mpd.conf
 PrivateTmp=yes
 
 [Install]

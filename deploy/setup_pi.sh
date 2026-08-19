@@ -122,8 +122,27 @@ if [[ ! "${1:-}" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]; then
     echo "Usage: configure-speaker AA:BB:CC:DD:EE:FF" >&2
     exit 1
 fi
-sudo sed -i "s/@SPEAKER_MAC@/$1/; s/DEV=\([0-9A-Fa-f]\{2\}:\)\{5\}[0-9A-Fa-f]\{2\}/DEV=$1/" /etc/mpd.conf
-sudo systemctl restart mpd
+# Re-exec as root rather than sudo-ing each line: the redirection below is
+# performed by the *shell*, so `sudo cat > /etc/mpd.conf` would have the
+# caller's unprivileged shell open the file and fail before sudo ever runs.
+if [[ ${EUID} -ne 0 ]]; then
+    exec sudo "$0" "$@"
+fi
+# Rewrite through the existing inode instead of `sed -i`, which writes a temp
+# file in /etc and renames it over the target. pi-media runs under
+# ProtectSystem=full with ReadWritePaths=/etc/mpd.conf: the *file* is writable
+# but /etc is not, so a rename needs a directory it cannot write — and would
+# replace the inode the bind mount points at even if it could.
+scratch="$(mktemp)"
+trap 'rm -f "$scratch"' EXIT
+sed "s/@SPEAKER_MAC@/$1/; s/DEV=\([0-9A-Fa-f]\{2\}:\)\{5\}[0-9A-Fa-f]\{2\}/DEV=$1/" /etc/mpd.conf > "$scratch"
+# Truncating the live config and then failing would leave MPD unstartable.
+if [[ ! -s "$scratch" ]]; then
+    echo "configure-speaker: refusing to write an empty /etc/mpd.conf" >&2
+    exit 1
+fi
+cat "$scratch" > /etc/mpd.conf
+systemctl restart mpd
 echo "MPD now outputs to $1. Test with:  mpc add <stream-url> && mpc play"
 EOF
 sudo chmod +x /usr/local/bin/configure-speaker
