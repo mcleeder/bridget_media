@@ -34,7 +34,7 @@ def _build_driver(simulate: bool) -> DisplayDriver:
         from display.drivers.simulator import SimulatorDriver
         return SimulatorDriver()
     from display.drivers.waveshare import WaveshareDriver
-    return WaveshareDriver()
+    return WaveshareDriver(rotate_180=config.DISPLAY_ROTATE_180)
 
 
 def main(simulate: bool) -> None:

@@ -5,6 +5,7 @@ from typing import Any, Final
 
 from PIL import Image
 
+from config import DISPLAY_HEIGHT, DISPLAY_WIDTH
 from display.errors import DisplayError
 
 # Waveshare's init() polls the panel's BUSY line with no timeout of its own, so
@@ -28,8 +29,9 @@ class WaveshareDriver:
     _touch: Any
     _touch_current: Any
     _touch_previous: Any
+    _rotate_180: bool
 
-    def __init__(self) -> None:
+    def __init__(self, rotate_180: bool) -> None:
         # Import deferred to avoid import errors on non-Pi environments
         try:
             from TP_lib import epd2in9_V2, icnt86
@@ -70,17 +72,28 @@ class WaveshareDriver:
         if failure is not None:
             raise DisplayError("e-paper panel initialisation failed") from failure
 
+        self._rotate_180 = rotate_180
         self._epd = epd
         self._touch = touch
         self._touch_current = icnt86.ICNT_Development()
         self._touch_previous = icnt86.ICNT_Development()
 
+    def _orient(self, image: Image.Image) -> Image.Image:
+        if not self._rotate_180:
+            return image
+        return image.transpose(Image.Transpose.ROTATE_180)
+
+    def _orient_touch(self, x: int, y: int) -> tuple[int, int]:
+        if not self._rotate_180:
+            return (x, y)
+        return (DISPLAY_WIDTH - 1 - x, DISPLAY_HEIGHT - 1 - y)
+
     def display(self, image: Image.Image) -> None:
         # display_Base (not display) so later partial refreshes diff against this frame
-        self._epd.display_Base(self._epd.getbuffer(image))
+        self._epd.display_Base(self._epd.getbuffer(self._orient(image)))
 
     def display_partial(self, image: Image.Image) -> None:
-        self._epd.display_Partial(self._epd.getbuffer(image))
+        self._epd.display_Partial(self._epd.getbuffer(self._orient(image)))
 
     def read_touch(self) -> list[tuple[int, int]]:
         # INT pin low = touch data pending; ICNT_Scan is a no-op unless Touch == 1
@@ -100,8 +113,12 @@ class WaveshareDriver:
         ):
             return []
 
+        # The panel and the touch grid are one physical part, so a rotated
+        # frame needs its taps rotated too — otherwise every tap lands on the
+        # row diagonally opposite the one the user pressed.
         return [
-            (self._touch_current.X[i], self._touch_current.Y[i]) for i in range(count)
+            self._orient_touch(self._touch_current.X[i], self._touch_current.Y[i])
+            for i in range(count)
         ]
 
     def clear(self) -> None:

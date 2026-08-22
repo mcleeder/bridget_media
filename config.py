@@ -7,6 +7,11 @@ DISPLAY_WIDTH: Final[int] = 296
 DISPLAY_HEIGHT: Final[int] = 128
 SIMULATOR_SCALE: Final[int] = 3
 
+# The HAT is mounted upside down where the box sits, so the hardware driver
+# flips both the rendered frame and the incoming touch coordinates.
+# Everything above the driver keeps working in one unrotated 296x128 space.
+DISPLAY_ROTATE_180: Final[bool] = True
+
 MPD_HOST: Final[str] = "localhost"
 MPD_PORT: Final[int] = 6600
 
