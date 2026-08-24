@@ -25,17 +25,21 @@ logger = logging.getLogger(__name__)
 # characters to add — a contiguous run on the numeric row — so they carry the
 # tail of the entropy.
 #
-# The cost is real and worth stating: two words from a 1295-word list plus four
-# digits is ~34 bits, against ~60 for the twelve random characters this
-# replaced. What makes that acceptable here rather than in general is the shape
-# of the attack. To use it, someone has to be in radio range during the
-# specific window a hotspot is up (hard-capped at 20 minutes, see
+# Six digits rather than four, which is where the entropy was bought back.
+# Two words from a 1295-word list plus six digits is ~41 bits, against ~34 at
+# four digits and ~60 for the twelve random characters this replaced. Digits
+# are the right place to spend the extra length: a contiguous numeric run is
+# the cheapest thing on the list to read and to type, so two more of them cost
+# far less than one more word or a longer alphabet would.
+#
+# What makes ~41 bits acceptable here rather than in general is the shape of
+# the attack. To use it, someone has to be in radio range during the specific
+# window a hotspot is up (hard-capped at 20 minutes, see
 # HOTSPOT_MAX_LIFETIME_SEC), capture both the handshake and the portal traffic,
 # and only then grind offline — and the per-device SSID is the PBKDF2 salt, so
-# nothing precomputed helps them. Raising _PASSWORD_DIGITS to 6 buys ~6.6 bits
-# for two more keystrokes if that trade ever stops looking right.
+# nothing precomputed helps them.
 _PASSWORD_WORDS: Final[int] = 2
-_PASSWORD_DIGITS: Final[int] = 4
+_PASSWORD_DIGITS: Final[int] = 6
 _PASSWORD_SEPARATOR: Final[str] = "_"
 _DIGIT_ALPHABET: Final[str] = "0123456789"
 # A truncated or half-written word list must fail loudly rather than quietly
