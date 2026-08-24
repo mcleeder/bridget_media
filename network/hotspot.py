@@ -25,19 +25,7 @@ logger = logging.getLogger(__name__)
 # characters to add — a contiguous run on the numeric row — so they carry the
 # tail of the entropy.
 #
-# Six digits rather than four, which is where the entropy was bought back.
-# Two words from a 1295-word list plus six digits is ~41 bits, against ~34 at
-# four digits and ~60 for the twelve random characters this replaced. Digits
-# are the right place to spend the extra length: a contiguous numeric run is
-# the cheapest thing on the list to read and to type, so two more of them cost
-# far less than one more word or a longer alphabet would.
-#
-# What makes ~41 bits acceptable here rather than in general is the shape of
-# the attack. To use it, someone has to be in radio range during the specific
-# window a hotspot is up (hard-capped at 20 minutes, see
-# HOTSPOT_MAX_LIFETIME_SEC), capture both the handshake and the portal traffic,
-# and only then grind offline — and the per-device SSID is the PBKDF2 salt, so
-# nothing precomputed helps them.
+# Two words from a 1295-word list plus six digits is ~41 bits.
 _PASSWORD_WORDS: Final[int] = 2
 _PASSWORD_DIGITS: Final[int] = 6
 _PASSWORD_SEPARATOR: Final[str] = "_"
@@ -50,7 +38,7 @@ _MINIMUM_WORDS: Final[int] = 256
 _SUFFIX_ALPHABET: Final[str] = "abcdefghijkmnopqrstuvwxyz23456789"
 _SUFFIX_LENGTH: Final[int] = 4
 
-_SSID_PREFIX: Final[str] = "Bridget-Setup"
+_SSID_PREFIX: Final[str] = "Bridge-Hotpot"
 
 _OWNER_READ_WRITE: Final[int] = stat.S_IRUSR | stat.S_IWUSR
 
