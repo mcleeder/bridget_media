@@ -3,23 +3,44 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import secrets
 import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+import config
+
 logger = logging.getLogger(__name__)
 
-# Ambiguous characters are left out: this password is read off a 296x128 e-ink
-# panel and typed into a phone by someone who did not choose it. The QR code
-# is the happy path, but the text underneath has to be usable when a camera
-# refuses to focus.
-_PASSWORD_ALPHABET: Final[str] = "abcdefghijkmnopqrstuvwxyz23456789"
-# WPA2 demands at least 8. Twelve keeps the QR payload short enough to stay a
-# small symbol on the panel (see display/screens/wifi_setup.py) while leaving
-# ~60 bits of entropy, which is far beyond what a 20-minute AP window needs.
-_PASSWORD_LENGTH: Final[int] = 12
+# The password is read off a 296x128 e-ink panel and typed into a phone by
+# someone who did not choose it. The QR code is the happy path, but the text
+# underneath has to be usable when a camera refuses to focus — and a random
+# character string is miserable to transcribe, because every character has to
+# be read individually and there is no way to tell you have mistyped one.
+#
+# Words fix that: they are chunked, self-checking, and can be held in the head
+# for the length of a glance away from the screen. The digits are the cheapest
+# characters to add — a contiguous run on the numeric row — so they carry the
+# tail of the entropy.
+#
+# The cost is real and worth stating: two words from a 1295-word list plus four
+# digits is ~34 bits, against ~60 for the twelve random characters this
+# replaced. What makes that acceptable here rather than in general is the shape
+# of the attack. To use it, someone has to be in radio range during the
+# specific window a hotspot is up (hard-capped at 20 minutes, see
+# HOTSPOT_MAX_LIFETIME_SEC), capture both the handshake and the portal traffic,
+# and only then grind offline — and the per-device SSID is the PBKDF2 salt, so
+# nothing precomputed helps them. Raising _PASSWORD_DIGITS to 6 buys ~6.6 bits
+# for two more keystrokes if that trade ever stops looking right.
+_PASSWORD_WORDS: Final[int] = 2
+_PASSWORD_DIGITS: Final[int] = 4
+_PASSWORD_SEPARATOR: Final[str] = "_"
+_DIGIT_ALPHABET: Final[str] = "0123456789"
+# A truncated or half-written word list must fail loudly rather than quietly
+# generating a password out of whatever few words survived.
+_MINIMUM_WORDS: Final[int] = 256
 
 # Distinguishes two boxes sitting in the same room. Stable once generated.
 _SUFFIX_ALPHABET: Final[str] = "abcdefghijkmnopqrstuvwxyz23456789"
@@ -40,9 +61,38 @@ class HotspotCredentials:
     password: str
 
 
+def _load_words(path: str) -> list[str]:
+    """Read the word list, rejecting anything that would weaken the password."""
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise HotspotCredentialsError(f"Could not read the word list at {path}") from exc
+
+    words = [
+        line.strip()
+        for line in lines
+        if line.strip() and not line.startswith("#")
+    ]
+    if any(not re.fullmatch(r"[a-z]+", word) for word in words):
+        raise HotspotCredentialsError(f"Word list at {path} has non-lowercase entries")
+    if len(set(words)) != len(words):
+        raise HotspotCredentialsError(f"Word list at {path} has duplicates")
+    if len(words) < _MINIMUM_WORDS:
+        raise HotspotCredentialsError(
+            f"Word list at {path} has only {len(words)} words, need {_MINIMUM_WORDS}"
+        )
+    return words
+
+
 def _generate() -> HotspotCredentials:
+    words = _load_words(config.HOTSPOT_WORDLIST_PATH)
     suffix = "".join(secrets.choice(_SUFFIX_ALPHABET) for _ in range(_SUFFIX_LENGTH))
-    password = "".join(secrets.choice(_PASSWORD_ALPHABET) for _ in range(_PASSWORD_LENGTH))
+    # sample() rather than repeated choice(): two identical words would read as
+    # a bug to whoever has to type it. The entropy cost is under a thousandth
+    # of a bit.
+    chosen = secrets.SystemRandom().sample(words, _PASSWORD_WORDS)
+    digits = "".join(secrets.choice(_DIGIT_ALPHABET) for _ in range(_PASSWORD_DIGITS))
+    password = _PASSWORD_SEPARATOR.join([*chosen, digits])
     return HotspotCredentials(ssid=f"{_SSID_PREFIX}-{suffix}", password=password)
 
 

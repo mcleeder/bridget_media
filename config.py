@@ -35,6 +35,9 @@ FEED_MANAGER_PORT: Final[int] = 80
 # Generated once per device by deploy/setup_pi.sh and read by the panel (to
 # draw the join QR), the watchdog (to raise the AP) and nothing else.
 HOTSPOT_CREDENTIALS_PATH: Final[str] = "hotspot_credentials.json"
+# Words the setup-hotspot password is built from. EFF Short Wordlist #1,
+# CC BY 3.0 US — see the file header.
+HOTSPOT_WORDLIST_PATH: Final[str] = "assets/wordlist.txt"
 NETWORK_WATCHDOG_STATE_PATH: Final[str] = "network_watchdog_state.json"
 # The last scan taken while the radio was free. The Pi has one Wi-Fi radio,
 # so the portal cannot scan while it is hosting the setup AP — the list is
