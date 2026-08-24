@@ -119,6 +119,16 @@ def sidebar_zones() -> list[Zone]:
     ]
 
 
+def radio_zones(controls_top: int, button_w: int) -> list[Zone]:
+    """Both radio-player layouts have identical targets — only the body differs."""
+    return [
+        Zone((0, 0, DISPLAY_WIDTH, controls_top), "no action", DEAD, show_aim=False),
+        sleep_zone(),
+        Zone((0, controls_top, button_w, DISPLAY_HEIGHT), "BACK (stops)", BACK),
+        Zone((button_w, controls_top, DISPLAY_WIDTH, DISPLAY_HEIGHT), "PLAY / PAUSE", PRIMARY),
+    ]
+
+
 def sleep_zone() -> Zone:
     """The badge's tap target — deliberately larger than its ink."""
     return Zone(
@@ -191,6 +201,15 @@ def build_screens() -> list[tuple[str, Image.Image, list[Zone]]]:
     stations = [Station(name=n, full_name=f"France Inter Paris {n[4:]}".strip(),
                         stream_url="x", metadata_id=i)
                 for i, n in enumerate(["FIP", "FIP Rock", "FIP Jazz", "FIP Groove"])]
+
+    @dataclass(frozen=True)
+    class Track:
+        title: str
+        artist: str | None
+        album: str | None
+        year: int | None
+
+    track = Track("Wish you were here", "Pink Floyd", "Wish you were here", 1975)
 
     @dataclass(frozen=True)
     class Status:
@@ -272,13 +291,16 @@ def build_screens() -> list[tuple[str, Image.Image, list[Zone]]]:
             [header_back(), *row_zones("play station", ROW, layout.SIDEBAR_X), *sidebar_zones()],
         ),
         (
-            "Radio playing — no seeking on a live stream, so no ±30s",
-            RadioPlayingScreen(stations[0], player, lambda: 30, lambda: None).render(),
-            [Zone((0, 0, DISPLAY_WIDTH, controls_top), "no action", DEAD, show_aim=False),
-             sleep_zone(),
-             Zone((0, controls_top, button_w, DISPLAY_HEIGHT), "BACK (stops)", BACK),
-             Zone((button_w, controls_top, DISPLAY_WIDTH, DISPLAY_HEIGHT),
-                  "PLAY / PAUSE", PRIMARY)],
+            "Radio playing — track known: title in guillemets is the headline, "
+            "station name shrinks to a label. Body has no tap targets",
+            RadioPlayingScreen(stations[2], player, lambda: 30, lambda: track).render(),
+            radio_zones(controls_top, button_w),
+        ),
+        (
+            "Radio playing — nothing nameable on air (jingle, talk break, or the "
+            "metadata call failed): the station name takes the screen back",
+            RadioPlayingScreen(stations[2], player, lambda: None, lambda: None).render(),
+            radio_zones(controls_top, button_w),
         ),
         (
             "Now Playing — controls are bottom-anchored",
