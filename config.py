@@ -79,8 +79,18 @@ class Station:
     fetcher never sees it (every row in `feeds` is fetched every refresh cycle).
     """
 
+    # Short form, for the station list — every full name starts with the same
+    # three words, so a list of them would be unscannable at a glance.
     name: str
+    # Expanded, for the player, where there is one name on screen and room to
+    # say it properly. FIP has been branded as the acronym since long before
+    # it stopped being Paris-only, but the box is a French radio on a shelf
+    # and the full name is the nicer thing to read.
+    full_name: str
     stream_url: str
+    # Radio France's own id for the station on the live-metadata endpoint.
+    # Confirmed one by one against what each was playing (see radio/metadata.py).
+    metadata_id: int
 
 
 FEEDS: Final[list[FeedConfig]] = [
@@ -103,17 +113,59 @@ FEEDS: Final[list[FeedConfig]] = [
 # the only mp3 decoder. Unlike FEEDS these are not a one-time seed — there is
 # no database table behind them, so editing this list is how stations change.
 STATIONS: Final[list[Station]] = [
-    Station(name="FIP", stream_url="https://icecast.radiofrance.fr/fip-midfi.mp3"),
-    Station(name="FIP Rock", stream_url="https://icecast.radiofrance.fr/fiprock-midfi.mp3"),
-    Station(name="FIP Jazz", stream_url="https://icecast.radiofrance.fr/fipjazz-midfi.mp3"),
-    Station(name="FIP Groove", stream_url="https://icecast.radiofrance.fr/fipgroove-midfi.mp3"),
-    Station(name="FIP Monde", stream_url="https://icecast.radiofrance.fr/fipworld-midfi.mp3"),
+    Station(
+        name="FIP",
+        full_name="France Inter Paris",
+        stream_url="https://icecast.radiofrance.fr/fip-midfi.mp3",
+        metadata_id=7,
+    ),
+    Station(
+        name="FIP Rock",
+        full_name="France Inter Paris Rock",
+        stream_url="https://icecast.radiofrance.fr/fiprock-midfi.mp3",
+        metadata_id=64,
+    ),
+    Station(
+        name="FIP Jazz",
+        full_name="France Inter Paris Jazz",
+        stream_url="https://icecast.radiofrance.fr/fipjazz-midfi.mp3",
+        metadata_id=65,
+    ),
+    Station(
+        name="FIP Groove",
+        full_name="France Inter Paris Groove",
+        stream_url="https://icecast.radiofrance.fr/fipgroove-midfi.mp3",
+        metadata_id=66,
+    ),
+    Station(
+        name="FIP Monde",
+        full_name="France Inter Paris Monde",
+        stream_url="https://icecast.radiofrance.fr/fipworld-midfi.mp3",
+        metadata_id=69,
+    ),
     Station(
         name="FIP Nouveautés",
+        full_name="France Inter Paris Nouveautés",
         stream_url="https://icecast.radiofrance.fr/fipnouveautes-midfi.mp3",
+        metadata_id=70,
     ),
-    Station(name="FIP Reggae", stream_url="https://icecast.radiofrance.fr/fipreggae-midfi.mp3"),
     Station(
-        name="FIP Électro", stream_url="https://icecast.radiofrance.fr/fipelectro-midfi.mp3"
+        name="FIP Reggae",
+        full_name="France Inter Paris Reggae",
+        stream_url="https://icecast.radiofrance.fr/fipreggae-midfi.mp3",
+        metadata_id=71,
+    ),
+    Station(
+        name="FIP Électro",
+        full_name="France Inter Paris Électro",
+        stream_url="https://icecast.radiofrance.fr/fipelectro-midfi.mp3",
+        metadata_id=74,
     ),
 ]
+
+# How often the player asks Radio France what is on air. Only ever while the
+# radio player is the screen being looked at (see ScreenManager), so a box
+# sitting on Home — or playing a podcast — makes no requests at all. That
+# bound is the whole reason this is acceptable on a device meant to run
+# unattended.
+RADIO_METADATA_POLL_SEC: Final[float] = 20.0

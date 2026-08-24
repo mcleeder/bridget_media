@@ -42,7 +42,13 @@ HOME_ITEM_WIFI: Final[str] = "Wi-Fi"
 
 # Shown under the station name on the radio player. These streams carry no
 # track metadata, so "live" is genuinely all the device knows.
-RADIO_LIVE: Final[str] = "Live"
+# The radio player speaks French: the station is French, the panel has the
+# glyphs, and "En direct" is what a French broadcaster actually says.
+RADIO_LIVE: Final[str] = "En direct"
+# French guillemets around the track title, spaced the French way.
+QUOTE_OPEN: Final[str] = "«"
+QUOTE_CLOSE: Final[str] = "»"
+RADIO_ALBUM_SEPARATOR: Final[str] = " · "
 
 # Suffix for a minutes value, on the duration grid and the player badge.
 SLEEP_MINUTES_SUFFIX: Final[str] = "m"

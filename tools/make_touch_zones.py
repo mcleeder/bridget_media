@@ -188,8 +188,9 @@ def build_screens() -> list[tuple[str, Image.Image, list[Zone]]]:
         def skip_back(self, seconds: float) -> None: ...
 
     player: AudioPlayer = Player()
-    stations = [Station(name=n, stream_url="x")
-                for n in ["FIP", "FIP Rock", "FIP Jazz", "FIP Groove"]]
+    stations = [Station(name=n, full_name=f"France Inter Paris {n[4:]}".strip(),
+                        stream_url="x", metadata_id=i)
+                for i, n in enumerate(["FIP", "FIP Rock", "FIP Jazz", "FIP Groove"])]
 
     @dataclass(frozen=True)
     class Status:
@@ -272,7 +273,7 @@ def build_screens() -> list[tuple[str, Image.Image, list[Zone]]]:
         ),
         (
             "Radio playing — no seeking on a live stream, so no ±30s",
-            RadioPlayingScreen(stations[0], player, lambda: 30).render(),
+            RadioPlayingScreen(stations[0], player, lambda: 30, lambda: None).render(),
             [Zone((0, 0, DISPLAY_WIDTH, controls_top), "no action", DEAD, show_aim=False),
              sleep_zone(),
              Zone((0, controls_top, button_w, DISPLAY_HEIGHT), "BACK (stops)", BACK),

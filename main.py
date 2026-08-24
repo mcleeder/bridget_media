@@ -17,6 +17,7 @@ from display.manager import ScreenManager
 from feeds import FeedFetcher, seed_default_feeds
 from network import NetworkController
 from player import PlayerController, PlayerError
+from radio.metadata import RadioMetadataClient
 
 logging.basicConfig(
     level=logging.INFO,
@@ -103,6 +104,7 @@ def main(simulate: bool) -> None:
             player=player,
             bluetooth=bluetooth,
             network=network,
+            radio_metadata=RadioMetadataClient(),
             stations=config.STATIONS,
         )
 

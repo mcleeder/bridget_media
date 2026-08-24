@@ -9,7 +9,7 @@ from collections.abc import Callable, Sequence
 from typing import Final
 
 import display.copy as copy
-from config import Station
+from config import RADIO_METADATA_POLL_SEC, Station
 from db.database import DatabaseError
 from db.models import Episode, Feed
 from db.queries import EpisodeRepository, FeedRepository, QueueRepository
@@ -39,6 +39,7 @@ from display.events import (
 )
 from display.network_control import HotspotCredentials, NetworkService, NetworkStatus
 from display.playback import AudioPlayer, PlaybackState
+from display.radio_metadata import RadioMetadataService, TrackMetadata
 from display.screens.base import Screen
 from display.screens.bluetooth_discover import BluetoothDiscoverScreen
 from display.screens.bluetooth_list import BluetoothScreen
@@ -82,6 +83,11 @@ _TOUCH_DEBOUNCE_SEC: Final[float] = 0.3
 _TRANSITIONS_BETWEEN_FULL_REFRESHES: Final[int] = 5
 
 
+def _track_identity(track: TrackMetadata | None) -> tuple[str, str | None] | None:
+    """What makes two metadata reads "the same track" for redraw purposes."""
+    return None if track is None else (track.title, track.artist)
+
+
 class ScreenManager:
     """Drives the UI state machine.
 
@@ -100,6 +106,7 @@ class ScreenManager:
         player: AudioPlayer,
         bluetooth: BluetoothService,
         network: NetworkService,
+        radio_metadata: RadioMetadataService,
         stations: Sequence[Station],
     ) -> None:
         self._driver = driver
@@ -109,6 +116,7 @@ class ScreenManager:
         self._player = player
         self._bluetooth = bluetooth
         self._network = network
+        self._radio_metadata = radio_metadata
 
         self._state: AppState = AppState.HOME
         self._selected_feed: Feed | None = None
@@ -166,6 +174,18 @@ class ScreenManager:
         )
         self._status_check_in_progress: bool = False
         self._status_generation: int = 0
+
+        # What Radio France says is on air. Fetched on the same terms as the
+        # scan and the status check — HTTP only, no sqlite, no drawing — and
+        # only ever while the radio player is the screen being looked at, so a
+        # box sitting on Home makes no requests at all.
+        self._track_results: queue.Queue[tuple[int, TrackMetadata | None]] = queue.Queue(
+            maxsize=1
+        )
+        self._current_track: TrackMetadata | None = None
+        self._track_fetch_in_progress: bool = False
+        self._track_generation: int = 0
+        self._last_track_fetch: float = 0.0
 
         self._show(full_refresh=True)
 
@@ -230,6 +250,7 @@ class ScreenManager:
             self._poll_playback()
         # Radio needs no polling — nothing to persist, mark or advance — but the
         # screen is still redrawn so the play/pause icon follows a dropped stream.
+        self._refresh_track_metadata()
         if self._state in (AppState.NOW_PLAYING, AppState.RADIO_PLAYING):
             self._show(full_refresh=False)
 
@@ -312,6 +333,7 @@ class ScreenManager:
                 self._set_sleep_timer(minutes)
             case BackRequested() if self._state is AppState.RADIO_PLAYING:
                 self._playing_station = None
+                self._abandon_track_fetch()
                 self._player_command(self._player.stop, "stop")
             case BackRequested() if self._state is AppState.WIFI:
                 self._abandon_status_check()
@@ -420,6 +442,11 @@ class ScreenManager:
             logger.exception("Could not read queue membership for episode %d", episode.id)
             return False
 
+    def _read_current_track(self) -> TrackMetadata | None:
+        """What the radio screen draws. Pulled at render time, like the
+        playback state, so a screen built once never shows a stale track."""
+        return self._current_track
+
     def _sleep_minutes_remaining(self) -> int | None:
         """Whole minutes left, or None when nothing is armed. Read by both players."""
         timer = self._sleep_timer
@@ -467,6 +494,7 @@ class ScreenManager:
         logger.info("Sleep timer expired, stopping playback")
         self._release_playing_episode()
         self._playing_station = None
+        self._abandon_track_fetch()
         self._player_command(self._player.stop, "stop at sleep timer")
 
     def _mark_played_if_past_threshold(self, state: PlaybackState) -> None:
@@ -529,9 +557,10 @@ class ScreenManager:
         and its saved position overwritten from the radio stream's elapsed time.
         """
         self._release_playing_episode()
+        self._abandon_track_fetch()
         self._playing_station = station
         self._radio_playing_screen = RadioPlayingScreen(
-            station, self._player, self._sleep_minutes_remaining
+            station, self._player, self._sleep_minutes_remaining, self._read_current_track
         )
         self._player_command(lambda: self._player.play(station.stream_url), "play station")
 
@@ -544,6 +573,7 @@ class ScreenManager:
         feed = self._feed_repository.get_by_id(episode.feed_id)
         feed_name = feed.name if feed is not None else ""
         self._playing_station = None
+        self._abandon_track_fetch()
         self._playing_episode = episode
         self._last_playback_state = None
         self._now_playing_screen = NowPlayingScreen(
@@ -682,6 +712,7 @@ class ScreenManager:
         """Collect finished background work. Called every tick from the main loop."""
         self._poll_scan_result()
         self._poll_status_result()
+        self._poll_track_result()
 
     def _poll_scan_result(self) -> None:
         try:
@@ -710,6 +741,69 @@ class ScreenManager:
         self._wifi_screen = WifiScreen(status)
         if self._state is AppState.WIFI:
             self._show(full_refresh=False)
+
+    def _poll_track_result(self) -> None:
+        try:
+            generation, track = self._track_results.get_nowait()
+        except queue.Empty:
+            return
+
+        self._track_fetch_in_progress = False
+        if generation != self._track_generation:
+            logger.debug("Discarding stale radio metadata")
+            return
+        changed = _track_identity(track) != _track_identity(self._current_track)
+        self._current_track = track
+        # Only redraw when the track actually changed. The poll runs every
+        # RADIO_METADATA_POLL_SEC but a track lasts minutes, so redrawing on
+        # every result would flash the panel for nothing.
+        if changed and self._state is AppState.RADIO_PLAYING:
+            self._show(full_refresh=False)
+
+    def _refresh_track_metadata(self) -> None:
+        """Start a metadata fetch if one is due. Called from refresh_playback."""
+        if self._state is not AppState.RADIO_PLAYING or self._playing_station is None:
+            return
+        if self._track_fetch_in_progress:
+            return
+        now = time.monotonic()
+        if now - self._last_track_fetch < RADIO_METADATA_POLL_SEC:
+            return
+        self._last_track_fetch = now
+        self._track_fetch_in_progress = True
+        station_id = self._playing_station.metadata_id
+        generation = self._track_generation
+        # Daemon so Ctrl-C never waits out an HTTP timeout.
+        threading.Thread(
+            target=self._run_track_fetch,
+            args=(generation, station_id),
+            name="radio-metadata",
+            daemon=True,
+        ).start()
+
+    def _run_track_fetch(self, generation: int, station_id: int) -> None:
+        """Metadata worker. Runs off the UI thread — must not draw or touch the DB."""
+        track: TrackMetadata | None
+        try:
+            track = self._radio_metadata.get_current_track(station_id)
+        except Exception:
+            # Radio exception types live above this layer (see layer hierarchy).
+            # None renders as the station-name layout, which is also what an
+            # offline box shows — there is nothing to say about the track.
+            logger.debug("Could not read live radio metadata", exc_info=True)
+            track = None
+        self._track_results.put((generation, track))
+
+    def _abandon_track_fetch(self) -> None:
+        """Drop the current track and any in-flight fetch of it.
+
+        Called when the station changes or the player is left, so a late
+        result can never label one station's stream with another's track.
+        """
+        self._track_generation += 1
+        self._track_fetch_in_progress = False
+        self._current_track = None
+        self._last_track_fetch = 0.0
 
     def _start_status_check(self) -> None:
         """Read the network status in the background and show the waiting frame.
