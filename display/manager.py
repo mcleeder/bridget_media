@@ -337,15 +337,20 @@ class ScreenManager:
         return previous.elapsed_sec / duration >= _PLAYED_FRACTION_THRESHOLD
 
     def _advance_queue(self) -> None:
-        """Handle a natural finish: pop the queue and start whatever is next.
+        """Handle a natural finish: drop the finished entry, continue the queue.
 
-        The finished episode's queue entry is dropped whether or not playback
-        started from the queue, and any natural finish starts the queue head.
+        Auto-advance only fires when the finished episode was itself queued.
+        Advancing after *any* natural finish meant one forgotten queue entry
+        ambushed the user at the end of every episode they had started straight
+        from the episode list — an unrelated podcast began playing unasked.
+        The finished episode's entry is still dropped either way.
         """
         finished = self._playing_episode
         self._playing_episode = None
         self._last_playback_state = None
+        was_queued = False
         if finished is not None:
+            was_queued = self._is_queued(finished)
             self._queue_command(
                 lambda: self._queue_repository.remove(finished.id),
                 "remove finished episode",
@@ -354,7 +359,7 @@ class ScreenManager:
                 # Normally the 90% threshold already fired; this catches a DB
                 # hiccup there so a finished episode never stays unplayed.
                 self._mark_episode_played(finished)
-        next_entry = self._queue_repository.first_entry()
+        next_entry = self._queue_repository.first_entry() if was_queued else None
         if next_entry is not None:
             logger.info("Auto-advancing to queued episode: %s", next_entry.episode.title)
             self._start_episode(next_entry.episode)
@@ -367,6 +372,18 @@ class ScreenManager:
         elif self._state is AppState.EPISODE_LIST:
             self._rebuild_episode_screen()
             self._show(full_refresh=False)
+
+    def _is_queued(self, episode: Episode) -> bool:
+        """Whether the episode is still in the queue — the gate on auto-advance.
+
+        A read failure counts as not queued: skipping the advance is the safe
+        wrong answer, since starting an unasked-for episode is what it guards.
+        """
+        try:
+            return episode.id in self._queue_repository.queued_episode_ids()
+        except DatabaseError:
+            logger.exception("Could not read queue membership for episode %d", episode.id)
+            return False
 
     def _mark_played_if_past_threshold(self, state: PlaybackState) -> None:
         episode = self._playing_episode
