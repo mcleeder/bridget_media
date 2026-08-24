@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Final
 
 from PIL import Image, ImageDraw
 
 import display.copy as copy
 import display.renderer as renderer
+import display.screens.sleep_badge as sleep_badge
 from config import DISPLAY_HEIGHT, DISPLAY_WIDTH, Station
-from display.events import BackRequested, Event, PlayPauseToggled
+from display.events import BackRequested, Event, PlayPauseToggled, SleepTimerRequested
 from display.playback import AudioPlayer, PlaybackState
 
 logger = logging.getLogger(__name__)
@@ -56,13 +58,23 @@ class RadioPlayingScreen:
     (progress bar, elapsed/total, ±30s) would have to be suppressed.
     """
 
-    def __init__(self, station: Station, player: AudioPlayer) -> None:
+    def __init__(
+        self,
+        station: Station,
+        player: AudioPlayer,
+        sleep_minutes_remaining: Callable[[], int | None],
+    ) -> None:
         self._station = station
         self._player = player
+        self._sleep_minutes_remaining = sleep_minutes_remaining
 
     def render(self) -> Image.Image:
         image, draw = renderer.new_canvas()
         state = self._read_playback_state()
+
+        # Nothing else occupies the top strip here, so the badge needs no
+        # clipping arrangement with a neighbour the way Now Playing does.
+        sleep_badge.draw_sleep_badge(draw, self._sleep_minutes_remaining())
 
         name_bottom = renderer.draw_text_wrapped_centered(
             draw,
@@ -109,6 +121,8 @@ class RadioPlayingScreen:
         )
 
     def handle_touch(self, x: int, y: int) -> Event | None:
+        if sleep_badge.is_sleep_badge_touch(x, y):
+            return SleepTimerRequested()
         if _hit(_BTN_BACK, x, y):
             return BackRequested()
         if _hit(_BTN_PLAY_PAUSE, x, y):

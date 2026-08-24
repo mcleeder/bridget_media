@@ -33,6 +33,8 @@ from display.events import (
     QueueRemoveRequested,
     QueueToggled,
     SkipRequested,
+    SleepDurationSelected,
+    SleepTimerRequested,
     StationSelected,
 )
 from display.network_control import HotspotCredentials, NetworkService, NetworkStatus
@@ -47,9 +49,17 @@ from display.screens.podcast_list import PodcastListScreen
 from display.screens.queue_list import QueueListScreen
 from display.screens.radio_list import RadioListScreen
 from display.screens.radio_playing import RadioPlayingScreen
+from display.screens.sleep_timer import SleepTimerScreen
 from display.screens.wifi_list import WifiScreen
 from display.screens.wifi_setup import WifiSetupScreen
-from display.state_machine import AppState, transition
+from display.sleep_timer import (
+    DURATION_CHOICES,
+    SleepTimer,
+    is_expired,
+    remaining_minutes,
+    start,
+)
+from display.state_machine import AppState, NavigationContext, transition
 
 logger = logging.getLogger(__name__)
 
@@ -110,8 +120,13 @@ class ScreenManager:
         # Previous playback poll — natural-finish detection compares two
         # consecutive polls. Reset whenever playback (re)starts or stops.
         self._last_playback_state: PlaybackState | None = None
-        # Where Back from Now Playing returns to — see transition()
+        # Where Back from Now Playing / the duration screen returns to — see
+        # NavigationContext in display/state_machine.py
         self._now_playing_origin: AppState = AppState.EPISODE_LIST
+        self._sleep_timer_origin: AppState = AppState.NOW_PLAYING
+        # Session state, never persisted: a sleep timer that survived a restart
+        # would stop playback at a deadline nobody set.
+        self._sleep_timer: SleepTimer | None = None
         self._last_position_persist: float = 0.0
         self._last_touch_time: float = 0.0
         # Start at the threshold so the very first frame is a full refresh,
@@ -128,6 +143,7 @@ class ScreenManager:
         self._discover_screen: BluetoothDiscoverScreen | None = None
         self._wifi_screen: WifiScreen | None = None
         self._wifi_setup_screen: WifiSetupScreen | None = None
+        self._sleep_timer_screen: SleepTimerScreen | None = None
 
         # Device discovery is the one bluetooth call run off the UI thread: it
         # takes ~15s and, unlike pairing, the user may well want to back out of
@@ -164,10 +180,21 @@ class ScreenManager:
             return
 
         self._apply_side_effects(event)
-        next_state = transition(self._state, event, self._now_playing_origin)
-
-        if next_state is AppState.NOW_PLAYING and self._state is not AppState.NOW_PLAYING:
+        # Origins are recorded from the event that *enters* a screen, never
+        # from "the next state happens to be it". Returning to Now Playing
+        # from the sleep-timer screen is also a transition into NOW_PLAYING,
+        # and recording that would set the origin to SLEEP_TIMER — leaving
+        # Back bouncing between the two screens with no way out to the list.
+        if isinstance(event, EpisodeSelected):
             self._now_playing_origin = self._state
+        if isinstance(event, SleepTimerRequested):
+            self._sleep_timer_origin = self._state
+
+        context = NavigationContext(
+            now_playing_origin=self._now_playing_origin,
+            sleep_timer_origin=self._sleep_timer_origin,
+        )
+        next_state = transition(self._state, event, context)
 
         if next_state is not self._state:
             logger.info(
@@ -195,6 +222,10 @@ class ScreenManager:
         mark-played, position persistence, and queue auto-advance must not stop
         because the user navigated away — but only Now Playing is redrawn.
         """
+        # First and unconditional. Someone can set a timer and navigate to Home
+        # before dozing off, and radio runs with no polling at all, so anything
+        # narrower silently never fires for half the cases.
+        self._check_sleep_timer()
         if self._playing_episode is not None:
             self._poll_playback()
         # Radio needs no polling — nothing to persist, mark or advance — but the
@@ -275,6 +306,10 @@ class ScreenManager:
                 self._start_episode(episode)
             case StationSelected(station):
                 self._start_station(station)
+            case SleepTimerRequested():
+                self._sleep_timer_screen = SleepTimerScreen(self._armed_minutes())
+            case SleepDurationSelected(minutes):
+                self._set_sleep_timer(minutes)
             case BackRequested() if self._state is AppState.RADIO_PLAYING:
                 self._playing_station = None
                 self._player_command(self._player.stop, "stop")
@@ -385,6 +420,55 @@ class ScreenManager:
             logger.exception("Could not read queue membership for episode %d", episode.id)
             return False
 
+    def _sleep_minutes_remaining(self) -> int | None:
+        """Whole minutes left, or None when nothing is armed. Read by both players."""
+        timer = self._sleep_timer
+        if timer is None:
+            return None
+        return remaining_minutes(timer, time.monotonic())
+
+    def _armed_minutes(self) -> int | None:
+        """Which duration cell the grid draws as selected.
+
+        Derived from what is left rather than remembered separately, so the
+        two can never disagree; a timer with 28 minutes to run marks 30.
+        """
+        remaining = self._sleep_minutes_remaining()
+        if remaining is None:
+            return None
+        return min(DURATION_CHOICES, key=lambda choice: (abs(choice - remaining), choice))
+
+    def _set_sleep_timer(self, minutes: int | None) -> None:
+        if minutes is None:
+            self._sleep_timer = None
+            logger.info("Sleep timer cleared")
+            return
+        self._sleep_timer = start(minutes, time.monotonic())
+        logger.info("Sleep timer set for %d minutes", minutes)
+
+    def _check_sleep_timer(self) -> None:
+        """Stop playback once the deadline passes.
+
+        Expiry must not look like a natural finish. If it landed while an
+        episode happened to be past the played threshold, _is_natural_finish
+        would see a stop right after playing near the end and _advance_queue
+        would start the *next* episode — waking the owner with more audio,
+        which is precisely inverted. Releasing the episode before stopping the
+        player is what makes that structurally impossible, exactly as it
+        already does for a user-initiated Back.
+
+        The screen is deliberately not navigated away from: e-ink holds its
+        last frame with no power, so a stopped player is fine to wake up to.
+        """
+        timer = self._sleep_timer
+        if timer is None or not is_expired(timer, time.monotonic()):
+            return
+        self._sleep_timer = None
+        logger.info("Sleep timer expired, stopping playback")
+        self._release_playing_episode()
+        self._playing_station = None
+        self._player_command(self._player.stop, "stop at sleep timer")
+
     def _mark_played_if_past_threshold(self, state: PlaybackState) -> None:
         episode = self._playing_episode
         if episode is None or episode.played:
@@ -446,7 +530,9 @@ class ScreenManager:
         """
         self._release_playing_episode()
         self._playing_station = station
-        self._radio_playing_screen = RadioPlayingScreen(station, self._player)
+        self._radio_playing_screen = RadioPlayingScreen(
+            station, self._player, self._sleep_minutes_remaining
+        )
         self._player_command(lambda: self._player.play(station.stream_url), "play station")
 
     def _start_episode(self, episode: Episode) -> None:
@@ -460,7 +546,9 @@ class ScreenManager:
         self._playing_station = None
         self._playing_episode = episode
         self._last_playback_state = None
-        self._now_playing_screen = NowPlayingScreen(episode, feed_name, self._player)
+        self._now_playing_screen = NowPlayingScreen(
+            episode, feed_name, self._player, self._sleep_minutes_remaining
+        )
         self._player_command(lambda: self._player.play(episode.audio_url), "play")
         if episode.play_position_sec > 0 and not episode.played:
             self._player_command(
@@ -780,6 +868,10 @@ class ScreenManager:
                 if self._radio_playing_screen is None:
                     raise DisplayError("RADIO_PLAYING state reached without a radio screen")
                 return self._radio_playing_screen
+            case AppState.SLEEP_TIMER:
+                if self._sleep_timer_screen is None:
+                    raise DisplayError("SLEEP_TIMER state reached without a duration screen")
+                return self._sleep_timer_screen
 
     def _show(self, full_refresh: bool) -> None:
         self._show_screen(self._current_screen(), full_refresh)

@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Final
 
 from PIL import Image, ImageDraw
 
 import display.copy as copy
 import display.renderer as renderer
+import display.screens.sleep_badge as sleep_badge
 from config import DISPLAY_HEIGHT, DISPLAY_WIDTH
 from db.models import Episode
-from display.events import BackRequested, Event, PlayPauseToggled, SkipRequested
+from display.events import (
+    BackRequested,
+    Event,
+    PlayPauseToggled,
+    SkipRequested,
+    SleepTimerRequested,
+)
 from display.playback import AudioPlayer, PlaybackState
 
 logger = logging.getLogger(__name__)
@@ -20,6 +28,7 @@ _TIME_FONT_SIZE: Final[int] = 9
 _ICON_SIZE: Final[int] = 22
 
 _FEED_NAME_Y: Final[int] = 3
+_FEED_NAME_GAP: Final[int] = 6
 _TITLE_Y: Final[int] = 16
 _TITLE_LINE_HEIGHT: Final[int] = 15
 _TITLE_MAX_LINES: Final[int] = 2
@@ -72,10 +81,19 @@ def _hit(rect: tuple[int, int, int, int], x: int, y: int) -> bool:
 
 
 class NowPlayingScreen:
-    def __init__(self, episode: Episode, feed_name: str, player: AudioPlayer) -> None:
+    def __init__(
+        self,
+        episode: Episode,
+        feed_name: str,
+        player: AudioPlayer,
+        sleep_minutes_remaining: Callable[[], int | None],
+    ) -> None:
         self._episode = episode
         self._feed_name = feed_name
         self._player = player
+        # Pulled at render time, like the playback state: refresh_playback
+        # redraws this screen every tick, so the countdown can never go stale.
+        self._sleep_minutes_remaining = sleep_minutes_remaining
 
     def render(self) -> Image.Image:
         image, draw = renderer.new_canvas()
@@ -84,8 +102,17 @@ class NowPlayingScreen:
         feed_font = renderer.load_text_font(_FEED_FONT_SIZE)
         title_font = renderer.load_text_font(_TITLE_FONT_SIZE)
 
+        sleep_badge.draw_sleep_badge(draw, self._sleep_minutes_remaining())
+        # The feed name shares its row with the badge, so it clips at the
+        # badge's reserved slot — the same idiom as list rows clipping at
+        # ACTION_X. The slot is a fixed width, so arming the timer never
+        # reflows the name.
         renderer.draw_text_clipped(
-            draw, self._feed_name, (6, _FEED_NAME_Y), feed_font, max_width=DISPLAY_WIDTH - 12
+            draw,
+            self._feed_name,
+            (6, _FEED_NAME_Y),
+            feed_font,
+            max_width=sleep_badge.INK_LEFT - _FEED_NAME_GAP - 6,
         )
         title_lines = renderer.wrap_lines(
             draw, self._episode.title, title_font, DISPLAY_WIDTH - 12, _TITLE_MAX_LINES
@@ -119,6 +146,8 @@ class NowPlayingScreen:
         )
 
     def handle_touch(self, x: int, y: int) -> Event | None:
+        if sleep_badge.is_sleep_badge_touch(x, y):
+            return SleepTimerRequested()
         if _hit(_BTN_BACK, x, y):
             return BackRequested()
         if _hit(_BTN_SKIP_BACK, x, y):

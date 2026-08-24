@@ -90,6 +90,25 @@ class HotspotRequested:
 
 
 @dataclass(frozen=True)
+class SleepTimerRequested:
+    """Open the duration screen from whichever player is on screen."""
+
+    pass
+
+
+@dataclass(frozen=True)
+class SleepDurationSelected:
+    """A duration in minutes, or None to cancel an armed timer.
+
+    Cancelling is the selected duration being tapped again rather than a
+    separate Off control: the active cell is drawn inverted, so tapping it
+    to switch it back off needs no explaining.
+    """
+
+    minutes: int | None
+
+
+@dataclass(frozen=True)
 class BluetoothPairRequested:
     device: BluetoothDevice
 
@@ -113,6 +132,8 @@ Event: TypeAlias = (
     | BluetoothDeviceSelected
     | BluetoothScanRequested
     | HotspotRequested
+    | SleepTimerRequested
+    | SleepDurationSelected
     | BluetoothPairRequested
     | BluetoothForgetRequested
 )

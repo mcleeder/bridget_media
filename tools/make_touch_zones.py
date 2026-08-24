@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import display.renderer as renderer  # noqa: E402
 import display.screens.list_layout as layout  # noqa: E402
+import display.screens.sleep_badge as sleep_badge  # noqa: E402
 from config import DISPLAY_HEIGHT, DISPLAY_WIDTH, Station  # noqa: E402
 from db.models import Episode, Feed, QueueEntry  # noqa: E402
 from display.playback import AudioPlayer  # noqa: E402
@@ -35,8 +36,10 @@ from display.screens.podcast_list import PodcastListScreen  # noqa: E402
 from display.screens.queue_list import QueueListScreen  # noqa: E402
 from display.screens.radio_list import RadioListScreen  # noqa: E402
 from display.screens.radio_playing import RadioPlayingScreen  # noqa: E402
+from display.screens.sleep_timer import SleepTimerScreen, cell_rect  # noqa: E402
 from display.screens.wifi_list import WifiScreen  # noqa: E402
 from display.screens.wifi_setup import WifiSetupScreen  # noqa: E402
+from display.sleep_timer import DURATION_CHOICES  # noqa: E402
 
 SCALE: Final[int] = 3
 MARGIN: Final[int] = 20
@@ -54,6 +57,7 @@ BACK = (214, 55, 55)
 ADD = (150, 70, 200)
 PRIMARY = (120, 40, 160)
 SKIP = (40, 170, 180)
+SLEEP = (90, 90, 200)
 DEAD = (150, 150, 150)
 
 
@@ -113,6 +117,24 @@ def sidebar_zones() -> list[Zone]:
             SCROLL_DOWN,
         ),
     ]
+
+
+def sleep_zone() -> Zone:
+    """The badge's tap target — deliberately larger than its ink."""
+    return Zone(
+        (sleep_badge.TOUCH_LEFT, 0, DISPLAY_WIDTH, sleep_badge.TOUCH_BOTTOM),
+        "SLEEP TIMER",
+        SLEEP,
+    )
+
+
+def sleep_cell_zones() -> list[Zone]:
+    zones = []
+    for index, minutes in enumerate(DURATION_CHOICES):
+        rect = cell_rect(index)
+        label = f"set {minutes}m (tap again to clear)"
+        zones.append(Zone(rect, label, SLEEP if minutes != 30 else PRIMARY))
+    return zones
 
 
 def header_back(x_end: int = DISPLAY_WIDTH) -> Zone:
@@ -250,21 +272,29 @@ def build_screens() -> list[tuple[str, Image.Image, list[Zone]]]:
         ),
         (
             "Radio playing — no seeking on a live stream, so no ±30s",
-            RadioPlayingScreen(stations[0], player).render(),
+            RadioPlayingScreen(stations[0], player, lambda: 30).render(),
             [Zone((0, 0, DISPLAY_WIDTH, controls_top), "no action", DEAD, show_aim=False),
+             sleep_zone(),
              Zone((0, controls_top, button_w, DISPLAY_HEIGHT), "BACK (stops)", BACK),
              Zone((button_w, controls_top, DISPLAY_WIDTH, DISPLAY_HEIGHT),
                   "PLAY / PAUSE", PRIMARY)],
         ),
         (
             "Now Playing — controls are bottom-anchored",
-            NowPlayingScreen(episodes[0], "Darknet Diaries", player).render(),
+            NowPlayingScreen(episodes[0], "Darknet Diaries", player, lambda: 30).render(),
             [Zone((0, 0, DISPLAY_WIDTH, controls_top), "no action", DEAD, show_aim=False),
+             sleep_zone(),
              Zone((0, controls_top, button_w, DISPLAY_HEIGHT), "BACK (stops)", BACK),
              Zone((button_w, controls_top, button_w * 2, DISPLAY_HEIGHT), "-30s", SKIP),
              Zone((button_w * 2, controls_top, button_w * 3, DISPLAY_HEIGHT),
                   "PLAY / PAUSE", PRIMARY),
              Zone((button_w * 3, controls_top, DISPLAY_WIDTH, DISPLAY_HEIGHT), "+30s", SKIP)],
+        ),
+        (
+            "Sleep timer — a grid, not a list: every choice is one tap, and "
+            "tapping the selected cell clears it",
+            SleepTimerScreen(30).render(),
+            [header_back(), *sleep_cell_zones()],
         ),
     ]
 

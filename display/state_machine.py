@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum, auto
 
 from display.events import (
@@ -12,6 +13,8 @@ from display.events import (
     HomeMenuItem,
     HomeMenuSelected,
     HotspotRequested,
+    SleepDurationSelected,
+    SleepTimerRequested,
     StationSelected,
 )
 
@@ -28,13 +31,30 @@ class AppState(Enum):
     RADIO_PLAYING = auto()
     WIFI = auto()
     WIFI_SETUP = auto()
+    SLEEP_TIMER = auto()
 
 
-def transition(state: AppState, event: Event, now_playing_origin: AppState) -> AppState:
+@dataclass(frozen=True)
+class NavigationContext:
+    """Where Back returns to, for the states reachable from more than one screen.
+
+    Both are tracked by the caller and passed in, so transition() stays pure.
+    Grouping them became worthwhile at the second origin: the next one costs
+    a field here instead of another positional argument at every call site.
+
+    Note this is navigation *input*, not an outcome — event outcomes such as
+    pairing success still belong in side effects, never in this function.
+    """
+
+    now_playing_origin: AppState
+    sleep_timer_origin: AppState
+
+
+def transition(state: AppState, event: Event, context: NavigationContext) -> AppState:
     """Pure state-transition function: everything else about an event is a side effect.
 
-    NOW_PLAYING is reachable from more than one screen, so Back from it returns
-    to now_playing_origin — tracked by the caller, passed in to keep this pure.
+    NOW_PLAYING and SLEEP_TIMER are each reachable from more than one screen,
+    so Back from them returns to the matching origin in `context`.
     """
     match state, event:
         case AppState.HOME, HomeMenuSelected(item=HomeMenuItem.PODCASTS):
@@ -90,6 +110,14 @@ def transition(state: AppState, event: Event, now_playing_origin: AppState) -> A
         case AppState.EPISODE_LIST, BackRequested():
             return AppState.PODCAST_LIST
         case AppState.NOW_PLAYING, BackRequested():
-            return now_playing_origin
+            return context.now_playing_origin
+        # Reachable from either player, because the moment anyone wants a
+        # sleep timer is while the thing they are falling asleep to is playing.
+        case (AppState.NOW_PLAYING | AppState.RADIO_PLAYING), SleepTimerRequested():
+            return AppState.SLEEP_TIMER
+        # Picking a duration returns to the player, so the badge showing the
+        # new value is the confirmation. Same for cancelling and for Back.
+        case AppState.SLEEP_TIMER, (SleepDurationSelected() | BackRequested()):
+            return context.sleep_timer_origin
         case _:
             return state

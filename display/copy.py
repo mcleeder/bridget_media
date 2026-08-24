@@ -30,6 +30,7 @@ HEADER_ADD_DEVICE: Final[str] = "Add device"
 HEADER_RADIO: Final[str] = "Radio"
 HEADER_WIFI: Final[str] = "Wi-Fi"
 HEADER_WIFI_SETUP: Final[str] = "Setup mode"
+HEADER_SLEEP_TIMER: Final[str] = "Sleep timer"
 
 # --- Row labels ---------------------------------------------------------
 
@@ -42,6 +43,9 @@ HOME_ITEM_WIFI: Final[str] = "Wi-Fi"
 # Shown under the station name on the radio player. These streams carry no
 # track metadata, so "live" is genuinely all the device knows.
 RADIO_LIVE: Final[str] = "Live"
+
+# Suffix for a minutes value, on the duration grid and the player badge.
+SLEEP_MINUTES_SUFFIX: Final[str] = "m"
 
 DEVICE_CONNECTED: Final[str] = "Connected"
 DEVICE_TAP_TO_CONNECT: Final[str] = "Tap to connect"
